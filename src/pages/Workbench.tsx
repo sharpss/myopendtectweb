@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import MenuBar from '../components/layout/MenuBar';
 import ToolBar from '../components/layout/ToolBar';
 import StatusBar from '../components/layout/StatusBar';
@@ -6,12 +6,49 @@ import LeftPanel from '../components/layout/LeftPanel';
 import RightPanel from '../components/layout/RightPanel';
 import Viewer3D from '../components/viewer/Viewer3D';
 import SliceView from '../components/viewer/SliceView';
+import KeyboardShortcutsModal from '../components/common/KeyboardShortcutsModal';
 import { useViewerStore } from '../store/viewerStore';
+import { useThemeStore } from '../store/themeStore';
+import { useKeyboardShortcuts, SHORTCUTS } from '../hooks/useKeyboardShortcuts';
+import { useInterpretationStore } from '../store/interpretationStore';
 
 export default function Workbench() {
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
-  const { viewMode } = useViewerStore();
+  const [shortcutsModalOpen, setShortcutsModalOpen] = useState(false);
+  const { viewMode, setViewMode, setCameraPreset } = useViewerStore();
+  const { mode: themeMode, toggleTheme } = useThemeStore();
+  const { undo, redo, setActiveTool } = useInterpretationStore();
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (themeMode === 'dark') {
+      root.classList.add('dark');
+      root.classList.remove('light');
+    } else {
+      root.classList.add('light');
+      root.classList.remove('dark');
+    }
+  }, [themeMode]);
+
+  useKeyboardShortcuts({
+    '1': () => setViewMode('3d'),
+    '2': () => setViewMode('inline'),
+    '3': () => setViewMode('crossline'),
+    '4': () => setViewMode('timeslice'),
+    '5': () => setViewMode('quad'),
+    'Q': () => setLeftCollapsed(prev => !prev),
+    'W': () => setRightCollapsed(prev => !prev),
+    'V': () => setActiveTool('select'),
+    'M': () => setActiveTool('measure'),
+    'T': () => setActiveTool('horizon'),
+    'Y': () => setActiveTool('fault'),
+    'Ctrl+Z': undo,
+    'Ctrl+Y': redo,
+    'Ctrl+Shift+L': toggleTheme,
+    '?': () => setShortcutsModalOpen(true),
+    '/': () => setShortcutsModalOpen(true),
+  });
 
   const renderViewerArea = () => {
     switch (viewMode) {
@@ -58,6 +95,11 @@ export default function Workbench() {
       </div>
       
       <StatusBar />
+
+      <KeyboardShortcutsModal
+        isOpen={shortcutsModalOpen}
+        onClose={() => setShortcutsModalOpen(false)}
+      />
     </div>
   );
 }
