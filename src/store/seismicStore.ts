@@ -174,33 +174,46 @@ export const useSeismicStore = create<SeismicState>((set, get) => ({
 
       const result = await response.json();
 
-      set({
-        loadProgress: {
-          total: 100,
-          loaded: 50,
-          percentage: 50,
-          currentStage: '解析数据完成，准备加载...',
-          speed: 0,
-          eta: 0,
-        },
+      const safeCount = (n: number, def: number = 1) => {
+        if (!isFinite(n) || isNaN(n) || n <= 0) return def;
+        return Math.max(1, Math.floor(n));
+      };
+      const safeVal = (n: number, def: number = 0) => {
+        if (!isFinite(n) || isNaN(n)) return def;
+        return n;
+      };
+
+      const inlineCount = safeCount(result.inlineCount);
+      const crosslineCount = safeCount(result.crosslineCount);
+      const timeSamples = safeCount(result.timeSamples);
+      const sampleInterval = safeVal(result.sampleInterval, 4);
+
+      console.log('SEGY import result:', {
+        inlineCount, crosslineCount, timeSamples, sampleInterval,
+        inlineStart: result.inlineStart,
+        crosslineStart: result.crosslineStart,
+        inlineStep: result.inlineStep,
+        crosslineStep: result.crosslineStep,
+        minValue: result.minValue,
+        maxValue: result.maxValue,
       });
 
       const newDataset: SeismicDataset = {
         id: result.datasetId,
         name: result.name,
-        inlineCount: result.inlineCount,
-        crosslineCount: result.crosslineCount,
-        timeSamples: result.timeSamples,
-        sampleInterval: result.sampleInterval,
-        inlineStart: result.inlineStart,
-        crosslineStart: result.crosslineStart,
+        inlineCount,
+        crosslineCount,
+        timeSamples,
+        sampleInterval,
+        inlineStart: safeVal(result.inlineStart, result.inlineRange?.[0] ?? 1),
+        crosslineStart: safeVal(result.crosslineStart, result.crosslineRange?.[0] ?? 1),
         timeStart: 0,
-        inlineStep: result.inlineStep,
-        crosslineStep: result.crosslineStep,
+        inlineStep: safeCount(result.inlineStep, 1),
+        crosslineStep: safeCount(result.crosslineStep, 1),
         source: 'segy',
         createdAt: new Date(),
-        minValue: result.minValue,
-        maxValue: result.maxValue,
+        minValue: safeVal(result.minValue, -1),
+        maxValue: safeVal(result.maxValue, 1),
         remoteId: result.datasetId,
       };
 
@@ -218,8 +231,8 @@ export const useSeismicStore = create<SeismicState>((set, get) => ({
         },
       });
 
-      const strategyInfo = getDataStrategyInfo(newDataset);
-      const provider = createDataProvider(newDataset);
+      const strategyInfo = getDataStrategyInfo(newDataset, { strategy: 'full' });
+      const provider = createDataProvider(newDataset, { strategy: 'full' });
 
       const unsubscribe = provider.onProgress((progress) => {
         set({ loadProgress: progress });

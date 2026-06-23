@@ -1,3 +1,23 @@
+function safeDimension(n: number, max: number = 100000): number {
+  if (!isFinite(n) || isNaN(n) || n <= 0) return 1;
+  return Math.max(1, Math.min(Math.floor(n), max));
+}
+
+function safeArraySize(dims: number[], maxElements: number = 256 * 1024 * 1024): number {
+  let size = 1;
+  for (const d of dims) {
+    const sd = safeDimension(d);
+    if (size > maxElements / sd) {
+      return 0;
+    }
+    size *= sd;
+  }
+  if (!isFinite(size) || size <= 0 || size > maxElements) {
+    return 0;
+  }
+  return size;
+}
+
 export function downsampleVolume(
   data: Float32Array,
   srcInline: number,
@@ -5,33 +25,51 @@ export function downsampleVolume(
   srcTime: number,
   scale: number
 ): Float32Array {
-  const dstInline = Math.max(1, Math.floor(srcInline / scale));
-  const dstCrossline = Math.max(1, Math.floor(srcCrossline / scale));
-  const dstTime = Math.max(1, Math.floor(srcTime / scale));
-  const dstData = new Float32Array(dstInline * dstCrossline * dstTime);
+  const safeSrcInline = safeDimension(srcInline);
+  const safeSrcCrossline = safeDimension(srcCrossline);
+  const safeSrcTime = safeDimension(srcTime);
+  const safeScale = Math.max(1, Math.floor(scale) || 1);
+
+  const dstInline = Math.max(1, Math.floor(safeSrcInline / safeScale));
+  const dstCrossline = Math.max(1, Math.floor(safeSrcCrossline / safeScale));
+  const dstTime = Math.max(1, Math.floor(safeSrcTime / safeScale));
+
+  const srcSize = safeArraySize([safeSrcInline, safeSrcCrossline, safeSrcTime]);
+  const dstSize = safeArraySize([dstInline, dstCrossline, dstTime]);
+
+  if (srcSize === 0 || dstSize === 0) {
+    console.warn('downsampleVolume: invalid dimensions', { srcInline, srcCrossline, srcTime, scale });
+    return new Float32Array(1);
+  }
+
+  const dstData = new Float32Array(dstSize);
 
   for (let il = 0; il < dstInline; il++) {
     for (let xl = 0; xl < dstCrossline; xl++) {
       for (let t = 0; t < dstTime; t++) {
-        const srcIlStart = il * scale;
-        const srcXlStart = xl * scale;
-        const srcTStart = t * scale;
+        const srcIlStart = il * safeScale;
+        const srcXlStart = xl * safeScale;
+        const srcTStart = t * safeScale;
 
         let sum = 0;
         let count = 0;
 
-        for (let di = 0; di < scale && srcIlStart + di < srcInline; di++) {
-          for (let dx = 0; dx < scale && srcXlStart + dx < srcCrossline; dx++) {
-            for (let dt = 0; dt < scale && srcTStart + dt < srcTime; dt++) {
-              const srcIdx = ((srcIlStart + di) * srcCrossline + (srcXlStart + dx)) * srcTime + (srcTStart + dt);
-              sum += data[srcIdx];
-              count++;
+        for (let di = 0; di < safeScale && srcIlStart + di < safeSrcInline; di++) {
+          for (let dx = 0; dx < safeScale && srcXlStart + dx < safeSrcCrossline; dx++) {
+            for (let dt = 0; dt < safeScale && srcTStart + dt < safeSrcTime; dt++) {
+              const srcIdx = ((srcIlStart + di) * safeSrcCrossline + (srcXlStart + dx)) * safeSrcTime + (srcTStart + dt);
+              if (srcIdx >= 0 && srcIdx < data.length) {
+                sum += data[srcIdx];
+                count++;
+              }
             }
           }
         }
 
         const dstIdx = (il * dstCrossline + xl) * dstTime + t;
-        dstData[dstIdx] = count > 0 ? sum / count : 0;
+        if (dstIdx >= 0 && dstIdx < dstData.length) {
+          dstData[dstIdx] = count > 0 ? sum / count : 0;
+        }
       }
     }
   }
@@ -46,28 +84,44 @@ export function downsampleSlice(
   targetWidth: number,
   targetHeight: number
 ): Float32Array {
-  const result = new Float32Array(targetWidth * targetHeight);
-  const scaleX = srcWidth / targetWidth;
-  const scaleY = srcHeight / targetHeight;
+  const safeSrcWidth = safeDimension(srcWidth);
+  const safeSrcHeight = safeDimension(srcHeight);
+  const safeTargetWidth = safeDimension(targetWidth);
+  const safeTargetHeight = safeDimension(targetHeight);
 
-  for (let y = 0; y < targetHeight; y++) {
-    for (let x = 0; x < targetWidth; x++) {
+  const dstSize = safeArraySize([safeTargetWidth, safeTargetHeight]);
+  if (dstSize === 0) {
+    return new Float32Array(1);
+  }
+
+  const result = new Float32Array(dstSize);
+  const scaleX = safeSrcWidth / safeTargetWidth;
+  const scaleY = safeSrcHeight / safeTargetHeight;
+
+  for (let y = 0; y < safeTargetHeight; y++) {
+    for (let x = 0; x < safeTargetWidth; x++) {
       const srcX = Math.floor(x * scaleX);
       const srcY = Math.floor(y * scaleY);
-      const endX = Math.min(Math.floor((x + 1) * scaleX), srcWidth);
-      const endY = Math.min(Math.floor((y + 1) * scaleY), srcHeight);
+      const endX = Math.min(Math.floor((x + 1) * scaleX), safeSrcWidth);
+      const endY = Math.min(Math.floor((y + 1) * scaleY), safeSrcHeight);
 
       let sum = 0;
       let count = 0;
 
       for (let sy = srcY; sy < endY; sy++) {
         for (let sx = srcX; sx < endX; sx++) {
-          sum += data[sy * srcWidth + sx];
-          count++;
+          const srcIdx = sy * safeSrcWidth + sx;
+          if (srcIdx >= 0 && srcIdx < data.length) {
+            sum += data[srcIdx];
+            count++;
+          }
         }
       }
 
-      result[y * targetWidth + x] = count > 0 ? sum / count : 0;
+      const dstIdx = y * safeTargetWidth + x;
+      if (dstIdx >= 0 && dstIdx < result.length) {
+        result[dstIdx] = count > 0 ? sum / count : 0;
+      }
     }
   }
 
