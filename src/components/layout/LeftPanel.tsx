@@ -27,7 +27,7 @@ export default function LeftPanel({ isCollapsed, onToggleCollapse }: LeftPanelPr
   const [activeTab, setActiveTab] = useState<TabType>('data');
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set(['seismic']));
 
-  const { datasets, activeDatasetId } = useSeismicStore();
+  const { datasets, activeDatasetId, setActiveDataset, removeDataset } = useSeismicStore();
   const {
     horizons,
     faults,
@@ -136,19 +136,43 @@ export default function LeftPanel({ isCollapsed, onToggleCollapse }: LeftPanelPr
                   <div
                     key={ds.id}
                     className={cn(
-                      'flex items-center gap-2 px-2 py-1 rounded cursor-pointer text-xs',
+                      'flex items-center gap-2 px-2 py-1 rounded cursor-pointer text-xs group',
                       activeDatasetId === ds.id
                         ? 'bg-blue-600/30 text-blue-300'
                         : 'text-slate-400 hover:bg-slate-700/30'
                     )}
+                    onClick={() => setActiveDataset(ds.id)}
                   >
                     <GripVertical className="w-3 h-3 text-slate-600" />
                     <span className="truncate flex-1">{ds.name}</span>
-                    <button className="opacity-0 hover:opacity-100 p-0.5 hover:bg-slate-600 rounded">
-                      <Settings className="w-3 h-3" />
-                    </button>
+                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        className="p-0.5 hover:bg-slate-600 rounded"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                        }}
+                        title="设置"
+                      >
+                        <Settings className="w-3 h-3" />
+                      </button>
+                      <button
+                        className="p-0.5 hover:bg-red-600/50 rounded"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeDataset(ds.id);
+                        }}
+                        title="删除"
+                      >
+                        <Trash2 className="w-3 h-3 text-red-400" />
+                      </button>
+                    </div>
                   </div>
                 ))}
+                {datasets.length === 0 && (
+                  <div className="px-2 py-1.5 text-xs text-slate-500 italic">
+                    暂无数据集
+                  </div>
+                )}
               </div>
             )}
 

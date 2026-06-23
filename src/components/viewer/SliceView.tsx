@@ -3,10 +3,9 @@ import { useSeismicStore } from '../../store/seismicStore';
 import { useViewerStore } from '../../store/viewerStore';
 import { useInterpretationStore } from '../../store/interpretationStore';
 import { getColormapColor, applyBrightnessContrast } from '../../utils/colormap';
-import { MOCK_DATASET } from '../../data/mockSeismic';
 import { Point3D, SliceType } from '../../../shared/types';
 import { cn } from '../../lib/utils';
-import { X, Undo2, Check, SkipForward, SkipBack } from 'lucide-react';
+import { X, Undo2, Check, SkipForward, SkipBack, Database } from 'lucide-react';
 
 interface SliceViewProps {
   type: 'inline' | 'crossline' | 'timeslice';
@@ -30,9 +29,11 @@ interface CursorInfo {
 export default function SliceView({ type, className }: SliceViewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const { getSlice } = useSeismicStore();
+  const { getSlice, datasets, activeDatasetId } = useSeismicStore();
   const { colormap, brightness, contrast, inlineIndex, crosslineIndex, timeIndex, setInlineIndex, setCrosslineIndex, setTimeIndex } = useViewerStore();
   const { activeTool, horizons, faults, activeHorizonId, activeFaultId, addPickPoint, isPicking, currentPickPoints, startPicking, finishPicking, cancelPicking, removeLastPickPoint, autoTrackHorizon } = useInterpretationStore();
+  
+  const dataset = datasets.find((d) => d.id === activeDatasetId);
   
   const [cursorInfo, setCursorInfo] = useState<CursorInfo | null>(null);
   const [measurePoints, setMeasurePoints] = useState<MeasurePoint[]>([]);
@@ -50,7 +51,7 @@ export default function SliceView({ type, className }: SliceViewProps) {
   const getDataCoordinates = useCallback((clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
-    if (!canvas || !container) return null;
+    if (!canvas || !container || !dataset) return null;
     
     const rect = container.getBoundingClientRect();
     const x = clientX - rect.left - PLOT_X;
@@ -72,21 +73,21 @@ export default function SliceView({ type, className }: SliceViewProps) {
     
     let worldX: number, worldY: number;
     if (type === 'timeslice') {
-      worldX = MOCK_DATASET.inlineStart + dataX * MOCK_DATASET.inlineStep;
-      worldY = MOCK_DATASET.crosslineStart + dataY * MOCK_DATASET.crosslineStep;
+      worldX = dataset.inlineStart + dataX * dataset.inlineStep;
+      worldY = dataset.crosslineStart + dataY * dataset.crosslineStep;
     } else if (type === 'inline') {
-      worldX = MOCK_DATASET.crosslineStart + dataX * MOCK_DATASET.crosslineStep;
-      worldY = dataY * MOCK_DATASET.sampleInterval;
+      worldX = dataset.crosslineStart + dataX * dataset.crosslineStep;
+      worldY = dataY * dataset.sampleInterval;
     } else {
-      worldX = MOCK_DATASET.inlineStart + dataX * MOCK_DATASET.inlineStep;
-      worldY = dataY * MOCK_DATASET.sampleInterval;
+      worldX = dataset.inlineStart + dataX * dataset.inlineStep;
+      worldY = dataY * dataset.sampleInterval;
     }
     
     return {
       x, y, dataX, dataY, value, worldX, worldY,
       displayWidth, displayHeight,
     };
-  }, [type, index, getSlice]);
+  }, [type, index, getSlice, dataset]);
   
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -159,13 +160,13 @@ export default function SliceView({ type, className }: SliceViewProps) {
       let started = false;
       const points = horizon.points.filter(p => {
         if (type === 'inline') {
-          const il = Math.round(p.x / MOCK_DATASET.inlineStep);
+          const il = Math.round(p.x / dataset.inlineStep);
           return Math.abs(il - index) < 2;
         } else if (type === 'crossline') {
-          const xl = Math.round(p.y / MOCK_DATASET.crosslineStep);
+          const xl = Math.round(p.y / dataset.crosslineStep);
           return Math.abs(xl - index) < 2;
         } else {
-          const t = Math.round(p.z / MOCK_DATASET.sampleInterval);
+          const t = Math.round(p.z / dataset.sampleInterval);
           return Math.abs(t - index) < 2;
         }
       });
@@ -173,14 +174,14 @@ export default function SliceView({ type, className }: SliceViewProps) {
       points.forEach((p, i) => {
         let px: number, py: number;
         if (type === 'timeslice') {
-          px = PLOT_X + ((p.x - MOCK_DATASET.inlineStart) / (MOCK_DATASET.inlineCount * MOCK_DATASET.inlineStep)) * displayWidth;
-          py = PLOT_Y + ((p.y - MOCK_DATASET.crosslineStart) / (MOCK_DATASET.crosslineCount * MOCK_DATASET.crosslineStep)) * displayHeight;
+          px = PLOT_X + ((p.x - dataset.inlineStart) / (dataset.inlineCount * dataset.inlineStep)) * displayWidth;
+          py = PLOT_Y + ((p.y - dataset.crosslineStart) / (dataset.crosslineCount * dataset.crosslineStep)) * displayHeight;
         } else if (type === 'inline') {
-          px = PLOT_X + ((p.y - MOCK_DATASET.crosslineStart) / (MOCK_DATASET.crosslineCount * MOCK_DATASET.crosslineStep)) * displayWidth;
-          py = PLOT_Y + (p.z / (MOCK_DATASET.timeSamples * MOCK_DATASET.sampleInterval)) * displayHeight;
+          px = PLOT_X + ((p.y - dataset.crosslineStart) / (dataset.crosslineCount * dataset.crosslineStep)) * displayWidth;
+          py = PLOT_Y + (p.z / (dataset.timeSamples * dataset.sampleInterval)) * displayHeight;
         } else {
-          px = PLOT_X + ((p.x - MOCK_DATASET.inlineStart) / (MOCK_DATASET.inlineCount * MOCK_DATASET.inlineStep)) * displayWidth;
-          py = PLOT_Y + (p.z / (MOCK_DATASET.timeSamples * MOCK_DATASET.sampleInterval)) * displayHeight;
+          px = PLOT_X + ((p.x - dataset.inlineStart) / (dataset.inlineCount * dataset.inlineStep)) * displayWidth;
+          py = PLOT_Y + (p.z / (dataset.timeSamples * dataset.sampleInterval)) * displayHeight;
         }
         
         if (!started) {
@@ -202,13 +203,13 @@ export default function SliceView({ type, className }: SliceViewProps) {
       
       const points = fault.vertices.filter(p => {
         if (type === 'inline') {
-          const il = Math.round(p.x / MOCK_DATASET.inlineStep);
+          const il = Math.round(p.x / dataset.inlineStep);
           return Math.abs(il - index) < 3;
         } else if (type === 'crossline') {
-          const xl = Math.round(p.y / MOCK_DATASET.crosslineStep);
+          const xl = Math.round(p.y / dataset.crosslineStep);
           return Math.abs(xl - index) < 3;
         } else {
-          const t = Math.round(p.z / MOCK_DATASET.sampleInterval);
+          const t = Math.round(p.z / dataset.sampleInterval);
           return Math.abs(t - index) < 3;
         }
       });
@@ -217,14 +218,14 @@ export default function SliceView({ type, className }: SliceViewProps) {
       points.forEach(p => {
         let px: number, py: number;
         if (type === 'timeslice') {
-          px = PLOT_X + ((p.x - MOCK_DATASET.inlineStart) / (MOCK_DATASET.inlineCount * MOCK_DATASET.inlineStep)) * displayWidth;
-          py = PLOT_Y + ((p.y - MOCK_DATASET.crosslineStart) / (MOCK_DATASET.crosslineCount * MOCK_DATASET.crosslineStep)) * displayHeight;
+          px = PLOT_X + ((p.x - dataset.inlineStart) / (dataset.inlineCount * dataset.inlineStep)) * displayWidth;
+          py = PLOT_Y + ((p.y - dataset.crosslineStart) / (dataset.crosslineCount * dataset.crosslineStep)) * displayHeight;
         } else if (type === 'inline') {
-          px = PLOT_X + ((p.y - MOCK_DATASET.crosslineStart) / (MOCK_DATASET.crosslineCount * MOCK_DATASET.crosslineStep)) * displayWidth;
-          py = PLOT_Y + (p.z / (MOCK_DATASET.timeSamples * MOCK_DATASET.sampleInterval)) * displayHeight;
+          px = PLOT_X + ((p.y - dataset.crosslineStart) / (dataset.crosslineCount * dataset.crosslineStep)) * displayWidth;
+          py = PLOT_Y + (p.z / (dataset.timeSamples * dataset.sampleInterval)) * displayHeight;
         } else {
-          px = PLOT_X + ((p.x - MOCK_DATASET.inlineStart) / (MOCK_DATASET.inlineCount * MOCK_DATASET.inlineStep)) * displayWidth;
-          py = PLOT_Y + (p.z / (MOCK_DATASET.timeSamples * MOCK_DATASET.sampleInterval)) * displayHeight;
+          px = PLOT_X + ((p.x - dataset.inlineStart) / (dataset.inlineCount * dataset.inlineStep)) * displayWidth;
+          py = PLOT_Y + (p.z / (dataset.timeSamples * dataset.sampleInterval)) * displayHeight;
         }
         
         if (!started) {
@@ -251,14 +252,14 @@ export default function SliceView({ type, className }: SliceViewProps) {
       currentPickPoints.forEach((p, i) => {
         let px: number, py: number;
         if (type === 'timeslice') {
-          px = PLOT_X + ((p.x - MOCK_DATASET.inlineStart) / (MOCK_DATASET.inlineCount * MOCK_DATASET.inlineStep)) * displayWidth;
-          py = PLOT_Y + ((p.y - MOCK_DATASET.crosslineStart) / (MOCK_DATASET.crosslineCount * MOCK_DATASET.crosslineStep)) * displayHeight;
+          px = PLOT_X + ((p.x - dataset.inlineStart) / (dataset.inlineCount * dataset.inlineStep)) * displayWidth;
+          py = PLOT_Y + ((p.y - dataset.crosslineStart) / (dataset.crosslineCount * dataset.crosslineStep)) * displayHeight;
         } else if (type === 'inline') {
-          px = PLOT_X + ((p.y - MOCK_DATASET.crosslineStart) / (MOCK_DATASET.crosslineCount * MOCK_DATASET.crosslineStep)) * displayWidth;
-          py = PLOT_Y + (p.z / (MOCK_DATASET.timeSamples * MOCK_DATASET.sampleInterval)) * displayHeight;
+          px = PLOT_X + ((p.y - dataset.crosslineStart) / (dataset.crosslineCount * dataset.crosslineStep)) * displayWidth;
+          py = PLOT_Y + (p.z / (dataset.timeSamples * dataset.sampleInterval)) * displayHeight;
         } else {
-          px = PLOT_X + ((p.x - MOCK_DATASET.inlineStart) / (MOCK_DATASET.inlineCount * MOCK_DATASET.inlineStep)) * displayWidth;
-          py = PLOT_Y + (p.z / (MOCK_DATASET.timeSamples * MOCK_DATASET.sampleInterval)) * displayHeight;
+          px = PLOT_X + ((p.x - dataset.inlineStart) / (dataset.inlineCount * dataset.inlineStep)) * displayWidth;
+          py = PLOT_Y + (p.z / (dataset.timeSamples * dataset.sampleInterval)) * displayHeight;
         }
         
         if (i === 0) ctx.moveTo(px, py);
@@ -269,14 +270,14 @@ export default function SliceView({ type, className }: SliceViewProps) {
       currentPickPoints.forEach(p => {
         let px: number, py: number;
         if (type === 'timeslice') {
-          px = PLOT_X + ((p.x - MOCK_DATASET.inlineStart) / (MOCK_DATASET.inlineCount * MOCK_DATASET.inlineStep)) * displayWidth;
-          py = PLOT_Y + ((p.y - MOCK_DATASET.crosslineStart) / (MOCK_DATASET.crosslineCount * MOCK_DATASET.crosslineStep)) * displayHeight;
+          px = PLOT_X + ((p.x - dataset.inlineStart) / (dataset.inlineCount * dataset.inlineStep)) * displayWidth;
+          py = PLOT_Y + ((p.y - dataset.crosslineStart) / (dataset.crosslineCount * dataset.crosslineStep)) * displayHeight;
         } else if (type === 'inline') {
-          px = PLOT_X + ((p.y - MOCK_DATASET.crosslineStart) / (MOCK_DATASET.crosslineCount * MOCK_DATASET.crosslineStep)) * displayWidth;
-          py = PLOT_Y + (p.z / (MOCK_DATASET.timeSamples * MOCK_DATASET.sampleInterval)) * displayHeight;
+          px = PLOT_X + ((p.y - dataset.crosslineStart) / (dataset.crosslineCount * dataset.crosslineStep)) * displayWidth;
+          py = PLOT_Y + (p.z / (dataset.timeSamples * dataset.sampleInterval)) * displayHeight;
         } else {
-          px = PLOT_X + ((p.x - MOCK_DATASET.inlineStart) / (MOCK_DATASET.inlineCount * MOCK_DATASET.inlineStep)) * displayWidth;
-          py = PLOT_Y + (p.z / (MOCK_DATASET.timeSamples * MOCK_DATASET.sampleInterval)) * displayHeight;
+          px = PLOT_X + ((p.x - dataset.inlineStart) / (dataset.inlineCount * dataset.inlineStep)) * displayWidth;
+          py = PLOT_Y + (p.z / (dataset.timeSamples * dataset.sampleInterval)) * displayHeight;
         }
         
         ctx.beginPath();
@@ -322,14 +323,14 @@ export default function SliceView({ type, className }: SliceViewProps) {
         let dist: string;
         
         if (type === 'timeslice') {
-          const dx = (last.x - prev.x) * MOCK_DATASET.inlineStep;
-          const dy = (last.y - prev.y) * MOCK_DATASET.crosslineStep;
+          const dx = (last.x - prev.x) * dataset.inlineStep;
+          const dy = (last.y - prev.y) * dataset.crosslineStep;
           dist = `${Math.sqrt(dx * dx + dy * dy).toFixed(1)} m`;
         } else {
           const dx = type === 'inline'
-            ? (last.x - prev.x) * MOCK_DATASET.crosslineStep
-            : (last.x - prev.x) * MOCK_DATASET.inlineStep;
-          const dy = (last.y - prev.y) * MOCK_DATASET.sampleInterval;
+            ? (last.x - prev.x) * dataset.crosslineStep
+            : (last.x - prev.x) * dataset.inlineStep;
+          const dy = (last.y - prev.y) * dataset.sampleInterval;
           dist = `${Math.sqrt(dx * dx + dy * dy).toFixed(1)} ms`;
         }
         
@@ -359,11 +360,11 @@ export default function SliceView({ type, className }: SliceViewProps) {
       const ticks = 5;
       for (let i = 0; i <= ticks; i++) {
         const x = PLOT_X + (displayWidth / ticks) * i;
-        const val = Math.round(MOCK_DATASET.inlineStart + (MOCK_DATASET.inlineCount - 1) * MOCK_DATASET.inlineStep * (i / ticks));
+        const val = Math.round(dataset.inlineStart + (dataset.inlineCount - 1) * dataset.inlineStep * (i / ticks));
         ctx.fillText(val.toString(), x, displayHeight + PLOT_Y + 15);
         
         const y = PLOT_Y + (displayHeight / ticks) * i;
-        const yVal = Math.round(MOCK_DATASET.crosslineStart + (MOCK_DATASET.crosslineCount - 1) * MOCK_DATASET.crosslineStep * (i / ticks));
+        const yVal = Math.round(dataset.crosslineStart + (dataset.crosslineCount - 1) * dataset.crosslineStep * (i / ticks));
         ctx.save();
         ctx.translate(PLOT_X - 5, y + 3);
         ctx.textAlign = 'right';
@@ -374,17 +375,17 @@ export default function SliceView({ type, className }: SliceViewProps) {
       const ticks = 5;
       for (let i = 0; i <= ticks; i++) {
         const x = PLOT_X + (displayWidth / ticks) * i;
-        const startVal = type === 'inline' ? MOCK_DATASET.crosslineStart : MOCK_DATASET.inlineStart;
+        const startVal = type === 'inline' ? dataset.crosslineStart : dataset.inlineStart;
         const endVal = type === 'inline' 
-          ? MOCK_DATASET.crosslineStart + (MOCK_DATASET.crosslineCount - 1) * MOCK_DATASET.crosslineStep
-          : MOCK_DATASET.inlineStart + (MOCK_DATASET.inlineCount - 1) * MOCK_DATASET.inlineStep;
+          ? dataset.crosslineStart + (dataset.crosslineCount - 1) * dataset.crosslineStep
+          : dataset.inlineStart + (dataset.inlineCount - 1) * dataset.inlineStep;
         const val = Math.round(startVal + (endVal - startVal) * (i / ticks));
         ctx.fillText(val.toString(), x, displayHeight + PLOT_Y + 15);
       }
       
       for (let i = 0; i <= ticks; i++) {
         const y = PLOT_Y + (displayHeight / ticks) * i;
-        const timeVal = Math.round(MOCK_DATASET.timeStart + (MOCK_DATASET.timeSamples - 1) * MOCK_DATASET.sampleInterval * (i / ticks));
+        const timeVal = Math.round(dataset.timeStart + (dataset.timeSamples - 1) * dataset.sampleInterval * (i / ticks));
         ctx.save();
         ctx.translate(PLOT_X - 5, y + 3);
         ctx.textAlign = 'right';
@@ -395,7 +396,7 @@ export default function SliceView({ type, className }: SliceViewProps) {
     
     ctx.textAlign = 'left';
     
-  }, [type, index, colormap, brightness, contrast, getSlice, horizons, faults, activeHorizonId, isPicking, currentPickPoints, activeTool, measurePoints]);
+  }, [type, index, colormap, brightness, contrast, getSlice, horizons, faults, activeHorizonId, isPicking, currentPickPoints, activeTool, measurePoints, dataset]);
   
   const handleMouseMove = (e: React.MouseEvent) => {
     const coords = getDataCoordinates(e.clientX, e.clientY);
@@ -426,18 +427,18 @@ export default function SliceView({ type, className }: SliceViewProps) {
         point = {
           x: coords.worldX!,
           y: coords.worldY!,
-          z: index * MOCK_DATASET.sampleInterval,
+          z: index * dataset.sampleInterval,
         };
       } else if (type === 'inline') {
         point = {
-          x: index * MOCK_DATASET.inlineStep + MOCK_DATASET.inlineStart,
+          x: index * dataset.inlineStep + dataset.inlineStart,
           y: coords.worldX!,
           z: coords.worldY!,
         };
       } else {
         point = {
           x: coords.worldX!,
-          y: index * MOCK_DATASET.crosslineStep + MOCK_DATASET.crosslineStart,
+          y: index * dataset.crosslineStep + dataset.crosslineStart,
           z: coords.worldY!,
         };
       }
@@ -471,10 +472,10 @@ export default function SliceView({ type, className }: SliceViewProps) {
     e.preventDefault();
     const delta = e.deltaY > 0 ? 1 : -1;
     const maxIdx = type === 'inline' 
-      ? MOCK_DATASET.inlineCount - 1 
+      ? dataset.inlineCount - 1 
       : type === 'crossline' 
-        ? MOCK_DATASET.crosslineCount - 1 
-        : MOCK_DATASET.timeSamples - 1;
+        ? dataset.crosslineCount - 1 
+        : dataset.timeSamples - 1;
     setIndex(Math.max(0, Math.min(maxIdx, index + delta)));
   };
   
@@ -539,7 +540,16 @@ export default function SliceView({ type, className }: SliceViewProps) {
       onContextMenu={handleContextMenu}
       style={{ cursor: getCursorStyle() }}
     >
-      <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
+      {!dataset ? (
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <div className="w-12 h-12 mb-3 rounded-full bg-slate-800 flex items-center justify-center">
+            <Database className="w-6 h-6 text-slate-500" />
+          </div>
+          <p className="text-xs text-slate-400">未选择数据集</p>
+        </div>
+      ) : (
+        <>
+          <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
       
       <div className="absolute top-2 left-2 flex items-center gap-2 px-2 py-1 bg-slate-900/80 rounded text-[11px] text-slate-300 z-10">
         <div className={cn('w-2 h-2 rounded-full',
@@ -657,6 +667,8 @@ export default function SliceView({ type, className }: SliceViewProps) {
             单击拾取点，双击完成，右键取消
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );

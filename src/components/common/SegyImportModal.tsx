@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import Modal from './Modal';
 import { cn } from '../../lib/utils';
+import { SegyImportOptions } from '../../../shared/types';
 import {
   SEGY_BYTE_PRESETS,
   findBytePositionInfo,
@@ -27,16 +28,6 @@ interface SegyImportModalProps {
   isOpen: boolean;
   onClose: () => void;
   onImport?: (file: File, options: SegyImportOptions) => Promise<void>;
-}
-
-export interface SegyImportOptions {
-  datasetName: string;
-  byteOrder: 'big-endian' | 'little-endian';
-  dataFormat: number;
-  inlineByte: number;
-  crosslineByte: number;
-  sampleIntervalByte: number;
-  preset?: string;
 }
 
 type StepId = 'upload' | 'preview' | 'header' | 'options' | 'importing' | 'done';

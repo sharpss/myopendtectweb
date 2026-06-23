@@ -20,7 +20,8 @@ import {
 import { useInterpretationStore } from '../../store/interpretationStore';
 import { useViewerStore } from '../../store/viewerStore';
 import { useThemeStore } from '../../store/themeStore';
-import { ToolType, ViewerMode } from '../../../shared/types';
+import { useSeismicStore } from '../../store/seismicStore';
+import { ToolType, ViewerMode, SegyImportOptions } from '../../../shared/types';
 import { cn } from '../../lib/utils';
 import { useState } from 'react';
 import SegyImportModal from '../common/SegyImportModal';
@@ -63,7 +64,17 @@ export default function ToolBar() {
   const { activeTool, setActiveTool, undo, redo, undoStack, redoStack } = useInterpretationStore();
   const { viewMode, setViewMode } = useViewerStore();
   const { mode: themeMode, toggleTheme } = useThemeStore();
+  const { importSegy } = useSeismicStore();
   const [segyModalOpen, setSegyModalOpen] = useState(false);
+
+  const handleSegyImport = async (file: File, options: SegyImportOptions) => {
+    try {
+      await importSegy(file, options);
+      setSegyModalOpen(false);
+    } catch (err) {
+      console.error('Import failed:', err);
+    }
+  };
 
   const tools: { type: ToolType; icon: React.ReactNode; label: string }[] = [
     { type: 'select', icon: <MousePointer2 className="w-4 h-4" />, label: '选择 (V)' },
@@ -149,7 +160,11 @@ export default function ToolBar() {
         />
       </ToolGroup>
 
-      <SegyImportModal isOpen={segyModalOpen} onClose={() => setSegyModalOpen(false)} />
+      <SegyImportModal
+        isOpen={segyModalOpen}
+        onClose={() => setSegyModalOpen(false)}
+        onImport={handleSegyImport}
+      />
     </div>
   );
 }

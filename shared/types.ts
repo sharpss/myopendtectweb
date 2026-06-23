@@ -143,3 +143,13 @@ export interface DataStats {
   resolutionLevel: DataResolutionLevel;
   strategy: DataLoadStrategy;
 }
+
+export interface SegyImportOptions {
+  datasetName: string;
+  byteOrder: 'big-endian' | 'little-endian';
+  dataFormat: number;
+  inlineByte: number;
+  crosslineByte: number;
+  sampleIntervalByte: number;
+  preset?: string;
+}

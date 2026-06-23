@@ -6,10 +6,14 @@ import { useViewerStore } from '../../store/viewerStore';
 import { useSeismicStore } from '../../store/seismicStore';
 import { useInterpretationStore } from '../../store/interpretationStore';
 import { createColormapTexture } from '../../utils/colormap';
-import { MOCK_DATASET } from '../../data/mockSeismic';
 import { ColormapType } from '../../../shared/types';
-import { Layers, Box, Grid3X3, Play, Pause, RotateCcw, Eye, EyeOff } from 'lucide-react';
+import { Layers, Box, Grid3X3, Play, Pause, RotateCcw, Eye, EyeOff, Database } from 'lucide-react';
 import { cn } from '../../lib/utils';
+
+function useActiveDataset() {
+  const { datasets, activeDatasetId } = useSeismicStore();
+  return datasets.find((d) => d.id === activeDatasetId) || null;
+}
 
 function createSliceTexture(
   sliceData: Float32Array,
@@ -51,11 +55,12 @@ function InlineSlice() {
   const meshRef = useRef<THREE.Mesh>(null);
   const { inlineIndex, colormap, opacity, sliceVisibility } = useViewerStore();
   const { getSlice } = useSeismicStore();
-  const { inlineCount, crosslineCount, timeSamples, inlineStep, crosslineStep, sampleInterval } = MOCK_DATASET;
+  const dataset = useActiveDataset();
   
-  const sliceData = useMemo(() => getSlice('inline', inlineIndex), [inlineIndex, getSlice]);
+  const sliceData = useMemo(() => dataset ? getSlice('inline', inlineIndex) : null, [inlineIndex, getSlice, dataset]);
   
   const texture = useMemo(() => {
+    if (!sliceData) return null;
     return createSliceTexture(
       sliceData.data,
       sliceData.width,
@@ -67,7 +72,7 @@ function InlineSlice() {
   }, [sliceData, colormap]);
   
   useEffect(() => {
-    if (meshRef.current) {
+    if (meshRef.current && texture) {
       const material = meshRef.current.material as THREE.MeshBasicMaterial;
       material.map = texture;
       material.opacity = opacity;
@@ -76,7 +81,13 @@ function InlineSlice() {
     }
   }, [texture, opacity]);
 
-  if (!sliceVisibility.inline) return null;
+  if (!dataset || !sliceVisibility.inline || !texture) return null;
+  
+  const crosslineCount = dataset.crosslineCount;
+  const timeSamples = dataset.timeSamples;
+  const inlineStep = dataset.inlineStep;
+  const crosslineStep = dataset.crosslineStep;
+  const sampleInterval = dataset.sampleInterval;
   
   const x = inlineIndex * inlineStep;
   const width = crosslineCount * crosslineStep;
@@ -94,11 +105,12 @@ function CrosslineSlice() {
   const meshRef = useRef<THREE.Mesh>(null);
   const { crosslineIndex, colormap, opacity, sliceVisibility } = useViewerStore();
   const { getSlice } = useSeismicStore();
-  const { inlineCount, crosslineCount, timeSamples, inlineStep, crosslineStep, sampleInterval } = MOCK_DATASET;
+  const dataset = useActiveDataset();
   
-  const sliceData = useMemo(() => getSlice('crossline', crosslineIndex), [crosslineIndex, getSlice]);
+  const sliceData = useMemo(() => dataset ? getSlice('crossline', crosslineIndex) : null, [crosslineIndex, getSlice, dataset]);
   
   const texture = useMemo(() => {
+    if (!sliceData) return null;
     return createSliceTexture(
       sliceData.data,
       sliceData.width,
@@ -110,7 +122,7 @@ function CrosslineSlice() {
   }, [sliceData, colormap]);
   
   useEffect(() => {
-    if (meshRef.current) {
+    if (meshRef.current && texture) {
       const material = meshRef.current.material as THREE.MeshBasicMaterial;
       material.map = texture;
       material.opacity = opacity;
@@ -119,7 +131,13 @@ function CrosslineSlice() {
     }
   }, [texture, opacity]);
 
-  if (!sliceVisibility.crossline) return null;
+  if (!dataset || !sliceVisibility.crossline || !texture) return null;
+  
+  const inlineCount = dataset.inlineCount;
+  const timeSamples = dataset.timeSamples;
+  const inlineStep = dataset.inlineStep;
+  const crosslineStep = dataset.crosslineStep;
+  const sampleInterval = dataset.sampleInterval;
   
   const y = crosslineIndex * crosslineStep;
   const width = inlineCount * inlineStep;
@@ -137,11 +155,12 @@ function TimeSlice() {
   const meshRef = useRef<THREE.Mesh>(null);
   const { timeIndex, colormap, opacity, sliceVisibility } = useViewerStore();
   const { getSlice } = useSeismicStore();
-  const { inlineCount, crosslineCount, timeSamples, inlineStep, crosslineStep, sampleInterval } = MOCK_DATASET;
+  const dataset = useActiveDataset();
   
-  const sliceData = useMemo(() => getSlice('timeslice', timeIndex), [timeIndex, getSlice]);
+  const sliceData = useMemo(() => dataset ? getSlice('timeslice', timeIndex) : null, [timeIndex, getSlice, dataset]);
   
   const texture = useMemo(() => {
+    if (!sliceData) return null;
     return createSliceTexture(
       sliceData.data,
       sliceData.width,
@@ -153,7 +172,7 @@ function TimeSlice() {
   }, [sliceData, colormap]);
   
   useEffect(() => {
-    if (meshRef.current) {
+    if (meshRef.current && texture) {
       const material = meshRef.current.material as THREE.MeshBasicMaterial;
       material.map = texture;
       material.opacity = opacity;
@@ -162,7 +181,13 @@ function TimeSlice() {
     }
   }, [texture, opacity]);
 
-  if (!sliceVisibility.timeslice) return null;
+  if (!dataset || !sliceVisibility.timeslice || !texture) return null;
+  
+  const inlineCount = dataset.inlineCount;
+  const crosslineCount = dataset.crosslineCount;
+  const inlineStep = dataset.inlineStep;
+  const crosslineStep = dataset.crosslineStep;
+  const sampleInterval = dataset.sampleInterval;
   
   const z = timeIndex * sampleInterval;
   const width = inlineCount * inlineStep;
@@ -178,13 +203,13 @@ function TimeSlice() {
 
 function VolumeBox() {
   const { sliceVisibility } = useViewerStore();
-  const { inlineCount, crosslineCount, timeSamples, inlineStep, crosslineStep, sampleInterval } = MOCK_DATASET;
+  const dataset = useActiveDataset();
   
-  if (!sliceVisibility.volumeBox) return null;
+  if (!dataset || !sliceVisibility.volumeBox) return null;
   
-  const width = inlineCount * inlineStep;
-  const height = crosslineCount * crosslineStep;
-  const depth = timeSamples * sampleInterval;
+  const width = dataset.inlineCount * dataset.inlineStep;
+  const height = dataset.crosslineCount * dataset.crosslineStep;
+  const depth = dataset.timeSamples * dataset.sampleInterval;
   
   return (
     <mesh position={[width / 2, height / 2, depth / 2]}>
@@ -195,7 +220,16 @@ function VolumeBox() {
 }
 
 function AxesLabels() {
-  const { inlineCount, crosslineCount, timeSamples, inlineStep, crosslineStep, sampleInterval } = MOCK_DATASET;
+  const dataset = useActiveDataset();
+  
+  if (!dataset) return null;
+  
+  const inlineCount = dataset.inlineCount;
+  const crosslineCount = dataset.crosslineCount;
+  const timeSamples = dataset.timeSamples;
+  const inlineStep = dataset.inlineStep;
+  const crosslineStep = dataset.crosslineStep;
+  const sampleInterval = dataset.sampleInterval;
   
   return (
     <group>
@@ -217,7 +251,9 @@ function AxesLabels() {
 
 function Horizons() {
   const { horizons } = useInterpretationStore();
-  const { inlineCount, crosslineCount, inlineStep, crosslineStep } = MOCK_DATASET;
+  const dataset = useActiveDataset();
+  
+  if (!dataset) return null;
   
   return (
     <group>
@@ -249,6 +285,9 @@ function Horizons() {
 
 function Faults() {
   const { faults } = useInterpretationStore();
+  const dataset = useActiveDataset();
+  
+  if (!dataset) return null;
   
   return (
     <group>
@@ -281,10 +320,19 @@ function Faults() {
 function CameraController() {
   const { camera } = useThree();
   const { cameraPreset } = useViewerStore();
+  const dataset = useActiveDataset();
   const controlsRef = useRef<any>(null);
   
   useEffect(() => {
-    const { inlineCount, crosslineCount, timeSamples, inlineStep, crosslineStep, sampleInterval } = MOCK_DATASET;
+    if (!dataset) return;
+    
+    const inlineCount = dataset.inlineCount;
+    const crosslineCount = dataset.crosslineCount;
+    const timeSamples = dataset.timeSamples;
+    const inlineStep = dataset.inlineStep;
+    const crosslineStep = dataset.crosslineStep;
+    const sampleInterval = dataset.sampleInterval;
+    
     const centerX = (inlineCount * inlineStep) / 2;
     const centerY = (crosslineCount * crosslineStep) / 2;
     const centerZ = (timeSamples * sampleInterval) / 2;
@@ -330,17 +378,18 @@ function CameraController() {
     };
     
     animate();
-  }, [cameraPreset, camera]);
+  }, [cameraPreset, camera, dataset]);
   
   return null;
 }
 
 function AnimationController() {
   const { isAnimating, animationSpeed, animationDirection, animationSlice, setInlineIndex, setCrosslineIndex, setTimeIndex, inlineIndex, crosslineIndex, timeIndex } = useViewerStore();
+  const dataset = useActiveDataset();
   const lastTimeRef = useRef(0);
   
   useFrame((state) => {
-    if (!isAnimating) return;
+    if (!isAnimating || !dataset) return;
     
     const delta = state.clock.getElapsedTime() - lastTimeRef.current;
     if (delta < 0.05 / animationSpeed) return;
@@ -349,19 +398,19 @@ function AnimationController() {
     const dir = animationDirection === 'forward' ? 1 : -1;
     
     if (animationSlice === 'inline') {
-      const maxIdx = MOCK_DATASET.inlineCount - 1;
+      const maxIdx = dataset.inlineCount - 1;
       let next = inlineIndex + dir;
       if (next > maxIdx) next = 0;
       if (next < 0) next = maxIdx;
       setInlineIndex(next);
     } else if (animationSlice === 'crossline') {
-      const maxIdx = MOCK_DATASET.crosslineCount - 1;
+      const maxIdx = dataset.crosslineCount - 1;
       let next = crosslineIndex + dir;
       if (next > maxIdx) next = 0;
       if (next < 0) next = maxIdx;
       setCrosslineIndex(next);
     } else {
-      const maxIdx = MOCK_DATASET.timeSamples - 1;
+      const maxIdx = dataset.timeSamples - 1;
       let next = timeIndex + dir;
       if (next > maxIdx) next = 0;
       if (next < 0) next = maxIdx;
@@ -374,6 +423,14 @@ function AnimationController() {
 
 function Scene() {
   const { sliceVisibility } = useViewerStore();
+  const dataset = useActiveDataset();
+  
+  if (!dataset) return null;
+  
+  const inlineCount = dataset.inlineCount;
+  const crosslineCount = dataset.crosslineCount;
+  const inlineStep = dataset.inlineStep;
+  const crosslineStep = dataset.crosslineStep;
   
   return (
     <>
@@ -390,18 +447,18 @@ function Scene() {
       
       {sliceVisibility.grid && (
         <Grid
-          position={[MOCK_DATASET.inlineCount * MOCK_DATASET.inlineStep / 2, MOCK_DATASET.crosslineCount * MOCK_DATASET.crosslineStep / 2, 0]}
+          position={[inlineCount * inlineStep / 2, crosslineCount * crosslineStep / 2, 0]}
           args={[
-            MOCK_DATASET.inlineCount * MOCK_DATASET.inlineStep,
-            MOCK_DATASET.crosslineCount * MOCK_DATASET.crosslineStep,
+            inlineCount * inlineStep,
+            crosslineCount * crosslineStep,
           ]}
-          cellSize={MOCK_DATASET.inlineStep * 5}
+          cellSize={inlineStep * 5}
           cellThickness={0.5}
           cellColor="#334155"
-          sectionSize={MOCK_DATASET.inlineStep * 20}
+          sectionSize={inlineStep * 20}
           sectionThickness={1}
           sectionColor="#475569"
-          fadeDistance={MOCK_DATASET.inlineCount * MOCK_DATASET.inlineStep * 2}
+          fadeDistance={inlineCount * inlineStep * 2}
           fadeStrength={1}
           followCamera={false}
           infiniteGrid={false}
@@ -646,6 +703,28 @@ function Viewer3DToolbar() {
 }
 
 function Viewer3DContent({ className }: Viewer3DProps) {
+  const dataset = useActiveDataset();
+  
+  if (!dataset) {
+    return (
+      <div className={`relative bg-[#0a0a0f] flex flex-col items-center justify-center ${className || ''}`}>
+        <div className="text-center">
+          <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-slate-800 flex items-center justify-center">
+            <Database className="w-8 h-8 text-slate-500" />
+          </div>
+          <h3 className="text-slate-300 text-sm font-medium mb-1">未选择数据集</h3>
+          <p className="text-slate-500 text-xs max-w-xs">
+            请先导入 SEGY 文件或选择一个数据集以查看 3D 视图
+          </p>
+        </div>
+        <div className="absolute top-2 left-2 flex items-center gap-2 px-2 py-1 bg-slate-900/80 rounded text-[11px] text-slate-400">
+          <div className="w-2 h-2 rounded-full bg-slate-600" />
+          3D 视图
+        </div>
+      </div>
+    );
+  }
+  
   return (
     <div className={`relative bg-[#0a0a0f] ${className || ''}`}>
       <Canvas
