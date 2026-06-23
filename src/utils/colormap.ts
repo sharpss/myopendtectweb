@@ -81,16 +81,34 @@ export function getColormapColor(
   colormap: ColormapType
 ): [number, number, number] {
   const stops = colormapStops[colormap];
-  if (maxVal === minVal) return stops[Math.floor(stops.length / 2)];
+  if (!stops || stops.length === 0) {
+    return [0.5, 0.5, 0.5];
+  }
+  
+  const midIndex = Math.floor(stops.length / 2);
+  if (maxVal === minVal || !isFinite(value) || isNaN(value)) {
+    return stops[midIndex] || [0.5, 0.5, 0.5];
+  }
   
   const normalized = Math.max(0, Math.min(1, (value - minVal) / (maxVal - minVal)));
   const position = normalized * (stops.length - 1);
-  const index = Math.floor(position);
+  const index = Math.max(0, Math.floor(position));
   const frac = position - index;
   
-  if (index >= stops.length - 1) return stops[stops.length - 1];
+  if (index >= stops.length - 1) {
+    return stops[stops.length - 1] || [0.5, 0.5, 0.5];
+  }
+  if (index < 0) {
+    return stops[0] || [0.5, 0.5, 0.5];
+  }
   
-  return lerpColor(stops[index], stops[index + 1], frac);
+  const c1 = stops[index];
+  const c2 = stops[index + 1];
+  if (!c1 || !c2) {
+    return stops[midIndex] || [0.5, 0.5, 0.5];
+  }
+  
+  return lerpColor(c1, c2, frac);
 }
 
 export function createColormapTexture(
@@ -100,17 +118,38 @@ export function createColormapTexture(
   const data = new Uint8ClampedArray(width * 4);
   const stops = colormapStops[colormap];
   
+  if (!stops || stops.length === 0) {
+    for (let i = 0; i < width; i++) {
+      data[i * 4] = 128;
+      data[i * 4 + 1] = 128;
+      data[i * 4 + 2] = 128;
+      data[i * 4 + 3] = 255;
+    }
+    return data;
+  }
+  
   for (let i = 0; i < width; i++) {
     const t = i / (width - 1);
     const position = t * (stops.length - 1);
-    const index = Math.floor(position);
+    const index = Math.max(0, Math.floor(position));
     const frac = position - index;
     
     let r: number, g: number, b: number;
     if (index >= stops.length - 1) {
-      [r, g, b] = stops[stops.length - 1];
+      const c = stops[stops.length - 1] || [0.5, 0.5, 0.5];
+      [r, g, b] = c;
+    } else if (index < 0) {
+      const c = stops[0] || [0.5, 0.5, 0.5];
+      [r, g, b] = c;
     } else {
-      [r, g, b] = lerpColor(stops[index], stops[index + 1], frac);
+      const c1 = stops[index];
+      const c2 = stops[index + 1];
+      if (!c1 || !c2) {
+        const c = stops[Math.floor(stops.length / 2)] || [0.5, 0.5, 0.5];
+        [r, g, b] = c;
+      } else {
+        [r, g, b] = lerpColor(c1, c2, frac);
+      }
     }
     
     data[i * 4] = Math.round(r * 255);

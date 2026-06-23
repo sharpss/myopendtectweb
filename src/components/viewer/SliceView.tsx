@@ -64,13 +64,16 @@ export default function SliceView({ type, className }: SliceViewProps) {
     if (x < 0 || x > displayWidth || y < 0 || y > displayHeight) return null;
     
     const sliceData = getSlice(type, index);
+    if (!sliceData || !sliceData.data) return null;
     const { width, height } = sliceData;
+    
+    if (width === 0 || height === 0) return null;
     
     const dataX = Math.floor((x / displayWidth) * width);
     const dataY = Math.floor((y / displayHeight) * height);
     
     const dataIdx = dataY * width + dataX;
-    const value = sliceData.data[Math.min(dataIdx, sliceData.data.length - 1)];
+    const value = sliceData.data[Math.min(Math.max(0, dataIdx), sliceData.data.length - 1)];
     
     let worldX: number, worldY: number;
     if (type === 'timeslice') {
@@ -99,9 +102,11 @@ export default function SliceView({ type, className }: SliceViewProps) {
     if (!ctx) return;
     
     const sliceData = getSlice(type, index);
+    if (!sliceData || !sliceData.data) return;
     const { data, width, height, minValue, maxValue } = sliceData;
     
-    if (width === 0 || height === 0) return;
+    if (width === 0 || height === 0 || data.length === 0) return;
+    if (typeof minValue !== 'number' || typeof maxValue !== 'number') return;
     
     const rect = container.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;

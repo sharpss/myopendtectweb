@@ -25,14 +25,25 @@ function createSliceTexture(
   maxVal: number
 ): THREE.DataTexture | null {
   if (width <= 0 || height <= 0 || sliceData.length === 0) return null;
+  if (typeof minVal !== 'number' || typeof maxVal !== 'number') return null;
+  if (!isFinite(minVal) || !isFinite(maxVal)) return null;
   
   const colormapData = createColormapTexture(colormap, 256);
   const imageData = new Uint8Array(width * height * 4);
   
+  const range = maxVal - minVal;
+  const midColorIdx = 128 * 4;
+  
   for (let i = 0; i < sliceData.length; i++) {
     const val = sliceData[i];
-    const normalized = Math.max(0, Math.min(1, (val - minVal) / (maxVal - minVal)));
-    const colorIdx = Math.floor(normalized * 255) * 4;
+    let colorIdx: number;
+    
+    if (range === 0 || !isFinite(val) || isNaN(val)) {
+      colorIdx = midColorIdx;
+    } else {
+      const normalized = Math.max(0, Math.min(1, (val - minVal) / range));
+      colorIdx = Math.floor(normalized * 255) * 4;
+    }
     
     imageData[i * 4] = colormapData[colorIdx];
     imageData[i * 4 + 1] = colormapData[colorIdx + 1];
