@@ -33,8 +33,11 @@ interface SegyDataset {
   totalTraces: number;
   byteOrder: 'big-endian' | 'little-endian';
   dataFormatCode: number;
+  bytesPerSample: number;
   inlineByte: number;
   crosslineByte: number;
+  dataStart: number;
+  traceSize: number;
   textHeader: { raw: string; lines: string[]; encoding: 'ebcdic' | 'ascii' };
   binaryHeader: any;
   traceIndex: Map<string, number>;
@@ -155,8 +158,16 @@ function readInt32(buffer: Buffer, offset: number, bigEndian: boolean): number {
   return bigEndian ? buffer.readInt32BE(offset) : buffer.readInt32LE(offset);
 }
 
+function readUInt32(buffer: Buffer, offset: number, bigEndian: boolean): number {
+  return bigEndian ? buffer.readUInt32BE(offset) : buffer.readUInt32LE(offset);
+}
+
 function readInt16(buffer: Buffer, offset: number, bigEndian: boolean): number {
   return bigEndian ? buffer.readInt16BE(offset) : buffer.readInt16LE(offset);
+}
+
+function readUInt16(buffer: Buffer, offset: number, bigEndian: boolean): number {
+  return bigEndian ? buffer.readUInt16BE(offset) : buffer.readUInt16LE(offset);
 }
 
 function ibmFloatToNumber(buffer: Buffer, offset: number, bigEndian: boolean): number {
@@ -178,14 +189,14 @@ function parseBinaryHeader(buffer: Buffer, offset: number, bigEndian: boolean) {
     jobId: readInt32(buffer, offset + 0, bigEndian),
     lineNumber: readInt32(buffer, offset + 4, bigEndian),
     reelNumber: readInt32(buffer, offset + 8, bigEndian),
-    tracesPerEnsemble: readInt16(buffer, offset + 12, bigEndian),
-    auxTracesPerEnsemble: readInt16(buffer, offset + 14, bigEndian),
-    sampleInterval: readInt16(buffer, offset + 16, bigEndian),
-    sampleIntervalOrig: readInt16(buffer, offset + 18, bigEndian),
-    samplesPerTrace: readInt16(buffer, offset + 20, bigEndian),
-    samplesPerTraceOrig: readInt16(buffer, offset + 22, bigEndian),
-    dataFormatCode: readInt16(buffer, offset + 24, bigEndian),
-    ensembleFold: readInt16(buffer, offset + 26, bigEndian),
+    tracesPerEnsemble: readUInt16(buffer, offset + 12, bigEndian),
+    auxTracesPerEnsemble: readUInt16(buffer, offset + 14, bigEndian),
+    sampleInterval: readUInt16(buffer, offset + 16, bigEndian),
+    sampleIntervalOrig: readUInt16(buffer, offset + 18, bigEndian),
+    samplesPerTrace: readUInt16(buffer, offset + 20, bigEndian),
+    samplesPerTraceOrig: readUInt16(buffer, offset + 22, bigEndian),
+    dataFormatCode: readUInt16(buffer, offset + 24, bigEndian),
+    ensembleFold: readUInt16(buffer, offset + 26, bigEndian),
     sortingCode: readInt16(buffer, offset + 28, bigEndian),
     verticalSum: readInt16(buffer, offset + 30, bigEndian),
     sweepFreqStart: readInt16(buffer, offset + 32, bigEndian),
@@ -202,8 +213,9 @@ function parseBinaryHeader(buffer: Buffer, offset: number, bigEndian: boolean) {
     measurementSystem: readInt16(buffer, offset + 54, bigEndian),
     impulseSignalPolarity: readInt16(buffer, offset + 56, bigEndian),
     vibratoryPolarity: readInt16(buffer, offset + 58, bigEndian),
-    segyFormatRevision: readInt16(buffer, offset + 300, bigEndian),
-    fixedLength: readInt16(buffer, offset + 302, bigEndian),
+    segyFormatRevisionMajor: buffer.readUInt8(offset + 300),
+    segyFormatRevisionMinor: buffer.readUInt8(offset + 301),
+    fixedLength: readUInt16(buffer, offset + 302, bigEndian),
     numExtTextHeaders: readInt16(buffer, offset + 304, bigEndian),
   };
 }
@@ -257,12 +269,16 @@ function analyzeSegyFile(
   totalTraces: number;
   sampleCount: number;
   sampleInterval: number;
+  sampleIntervalUs: number;
   byteOrder: 'big-endian' | 'little-endian';
   dataFormatCode: number;
+  dataStart: number;
+  bytesPerSample: number;
+  numExtTextHeaders: number;
 } {
   const fileBuffer = fs.readFileSync(filePath);
 
-  const bigEndian = options.byteOrder !== 'little-endian';
+  let bigEndian = options.byteOrder !== 'little-endian';
   const inlineByte = options.inlineByte ?? 189;
   const crosslineByte = options.crosslineByte ?? 193;
 
@@ -274,34 +290,96 @@ function analyzeSegyFile(
   const textHeaderLines = formatTextHeader(textHeaderRaw, 80);
 
   const binaryHeaderOffset = 3200;
-  const binaryHeader = parseBinaryHeader(fileBuffer, binaryHeaderOffset, bigEndian);
+  
+  const tryParseWithByteOrder = (be: boolean) => {
+    const bh = parseBinaryHeader(fileBuffer, binaryHeaderOffset, be);
+    let extHeaders = Math.max(0, bh.numExtTextHeaders);
+    let dataStart = 3600 + extHeaders * 3200;
+    let sc = options.sampleCount || bh.samplesPerTrace || 1000;
+    let dfc = options.dataFormatCode || bh.dataFormatCode || 5;
+    let si = bh.sampleInterval || 4000;
 
-  const sampleCount = options.sampleCount || binaryHeader.samplesPerTrace || 1000;
-  const dataFormatCode = options.dataFormatCode || binaryHeader.dataFormatCode || 5;
-  const sampleInterval = binaryHeader.sampleInterval || 4000;
+    let bps = 4;
+    if (dfc === 1 || dfc === 2 || dfc === 5) {
+      bps = 4;
+    } else if (dfc === 3) {
+      bps = 2;
+    } else if (dfc === 8) {
+      bps = 1;
+    } else {
+      bps = 4;
+      if (dfc === 0 || dfc > 8) {
+        dfc = 5;
+      }
+    }
 
-  const traceHeaderSize = 240;
-  let bytesPerSample = 4;
-  if (dataFormatCode === 1 || dataFormatCode === 2 || dataFormatCode === 5) {
-    bytesPerSample = 4;
-  } else if (dataFormatCode === 3) {
-    bytesPerSample = 2;
-  } else if (dataFormatCode === 8) {
-    bytesPerSample = 1;
+    if (sc <= 0 || sc > 100000) sc = 1000;
+    if (si <= 0 || si > 100000) si = 4000;
+
+    const ths = 240;
+    const ts = ths + sc * bps;
+    const tt = Math.floor((fileBuffer.length - dataStart) / ts);
+
+    const sampleTraceCount = Math.min(2000, tt);
+    const inlines: Set<number> = new Set();
+    const crosslines: Set<number> = new Set();
+
+    for (let i = 0; i < sampleTraceCount; i++) {
+      const traceOffset = dataStart + i * ts;
+      if (traceOffset + ths > fileBuffer.length) break;
+      const il = readInt32(fileBuffer, traceOffset + inlineByte - 1, be);
+      const xl = readInt32(fileBuffer, traceOffset + crosslineByte - 1, be);
+      if (il !== undefined && il !== null && Math.abs(il) < 1000000 && il !== 0) {
+        inlines.add(il);
+      }
+      if (xl !== undefined && xl !== null && Math.abs(xl) < 1000000 && xl !== 0) {
+        crosslines.add(xl);
+      }
+    }
+
+    let score = 0;
+    if (dfc >= 1 && dfc <= 8) score += 10;
+    if (sc >= 100 && sc <= 50000) score += 10;
+    if (si >= 100 && si <= 10000) score += 5;
+    if (extHeaders >= 0 && extHeaders <= 10) score += 3;
+    if (inlines.size > 5) score += 5;
+    if (tt > 100) score += 5;
+
+    return {
+      bh,
+      extHeaders,
+      dataStart,
+      sc,
+      dfc,
+      si,
+      bps,
+      ts,
+      tt,
+      inlines,
+      crosslines,
+      score,
+    };
+  };
+
+  let parseResult = tryParseWithByteOrder(bigEndian);
+  
+  if (!options.byteOrder) {
+    const parseResultLE = tryParseWithByteOrder(false);
+    if (parseResultLE.score > parseResult.score) {
+      parseResult = parseResultLE;
+      bigEndian = false;
+    }
   }
 
-  const traceSize = traceHeaderSize + sampleCount * bytesPerSample;
-  const dataStart = 3600;
-  const totalTraces = Math.floor((fileBuffer.length - dataStart) / traceSize);
+  const { bh, extHeaders, dataStart, sc: sampleCount, dfc: dataFormatCode, si, bps: bytesPerSample, ts: traceSize, tt: totalTraces, inlines, crosslines } = parseResult;
+  const sampleInterval = si;
 
-  const sampleTraceCount = Math.min(100, totalTraces);
+  const sampleTraceCount = Math.min(2000, totalTraces);
   const sampleTraces: any[] = [];
-  const inlines: Set<number> = new Set();
-  const crosslines: Set<number> = new Set();
 
   for (let i = 0; i < sampleTraceCount; i++) {
     const traceOffset = dataStart + i * traceSize;
-    if (traceOffset + traceHeaderSize > fileBuffer.length) break;
+    if (traceOffset + 240 > fileBuffer.length) break;
 
     const traceHeader = parseTraceHeader(
       fileBuffer,
@@ -319,26 +397,65 @@ function analyzeSegyFile(
       sourceY: traceHeader.sourceY,
       traceId: traceHeader.traceId,
     });
-
-    if (traceHeader.inline !== undefined) inlines.add(traceHeader.inline);
-    if (traceHeader.crossline !== undefined) crosslines.add(traceHeader.crossline);
   }
 
   const inlineArr = Array.from(inlines).sort((a, b) => a - b);
   const crosslineArr = Array.from(crosslines).sort((a, b) => a - b);
 
-  const inlineRange: [number, number] =
-    inlineArr.length > 0
-      ? [inlineArr[0], inlineArr[inlineArr.length - 1]]
-      : [1, sampleTraceCount];
+  let inlineCount: number;
+  let crosslineCount: number;
+  let inlineRange: [number, number];
+  let crosslineRange: [number, number];
 
-  const crosslineRange: [number, number] =
-    crosslineArr.length > 0
-      ? [crosslineArr[0], crosslineArr[crosslineArr.length - 1]]
-      : [1, 1];
+  if (inlineArr.length > 1) {
+    const minIl = inlineArr[0];
+    const maxIl = inlineArr[inlineArr.length - 1];
+    const steps = [];
+    for (let i = 1; i < inlineArr.length; i++) {
+      const diff = inlineArr[i] - inlineArr[i - 1];
+      if (diff > 0) steps.push(diff);
+    }
+    const stepIl = steps.length > 0 ? Math.min(...steps) : 1;
+    inlineCount = Math.floor((maxIl - minIl) / stepIl) + 1;
+    inlineRange = [minIl, maxIl];
+  } else if (inlineArr.length === 1) {
+    inlineCount = 1;
+    inlineRange = [inlineArr[0], inlineArr[0]];
+  } else {
+    inlineCount = Math.max(1, Math.floor(Math.sqrt(totalTraces)));
+    inlineRange = [1, inlineCount];
+  }
 
-  const inlineCount = Math.max(1, inlineArr.length);
-  const crosslineCount = Math.max(1, crosslineArr.length);
+  if (crosslineArr.length > 1) {
+    const minXl = crosslineArr[0];
+    const maxXl = crosslineArr[crosslineArr.length - 1];
+    const steps = [];
+    for (let i = 1; i < crosslineArr.length; i++) {
+      const diff = crosslineArr[i] - crosslineArr[i - 1];
+      if (diff > 0) steps.push(diff);
+    }
+    const stepXl = steps.length > 0 ? Math.min(...steps) : 1;
+    crosslineCount = Math.floor((maxXl - minXl) / stepXl) + 1;
+    crosslineRange = [minXl, maxXl];
+  } else if (crosslineArr.length === 1) {
+    crosslineCount = 1;
+    crosslineRange = [crosslineArr[0], crosslineArr[0]];
+  } else {
+    crosslineCount = Math.max(1, Math.ceil(totalTraces / Math.max(1, inlineCount)));
+    crosslineRange = [1, crosslineCount];
+  }
+
+  if (totalTraces > 0 && inlineCount * crosslineCount < totalTraces * 0.1) {
+    const estCount = Math.max(inlineCount, crosslineCount);
+    const otherCount = Math.ceil(totalTraces / estCount);
+    if (inlineArr.length >= crosslineArr.length) {
+      crosslineCount = otherCount;
+      crosslineRange = [1, otherCount];
+    } else {
+      inlineCount = otherCount;
+      inlineRange = [1, otherCount];
+    }
+  }
 
   return {
     textHeader: {
@@ -346,7 +463,7 @@ function analyzeSegyFile(
       lines: textHeaderLines,
       encoding: isEbcdic ? 'ebcdic' : 'ascii',
     },
-    binaryHeader,
+    binaryHeader: bh,
     sampleTraces,
     inlineRange,
     crosslineRange,
@@ -355,8 +472,12 @@ function analyzeSegyFile(
     totalTraces,
     sampleCount,
     sampleInterval: sampleInterval / 1000,
+    sampleIntervalUs: sampleInterval,
     byteOrder: bigEndian ? 'big-endian' : 'little-endian',
     dataFormatCode,
+    dataStart,
+    bytesPerSample,
+    numExtTextHeaders: extHeaders,
   };
 }
 
@@ -366,15 +487,20 @@ function readTraceData(
   sampleCount: number,
   dataFormatCode: number,
   bigEndian: boolean,
-  traceSize: number
+  traceSize: number,
+  dataStart: number = 3600
 ): Float32Array {
   const traceHeaderSize = 240;
-  const dataOffset = 3600 + traceIndex * traceSize + traceHeaderSize;
+  const dataOffset = dataStart + traceIndex * traceSize + traceHeaderSize;
   const result = new Float32Array(sampleCount);
 
+  let bytesPerSample = 4;
+  if (dataFormatCode === 3) bytesPerSample = 2;
+  else if (dataFormatCode === 8) bytesPerSample = 1;
+
   for (let i = 0; i < sampleCount; i++) {
-    const sampleOffset = dataOffset + i * 4;
-    if (sampleOffset + 4 > fileBuffer.length) {
+    const sampleOffset = dataOffset + i * bytesPerSample;
+    if (sampleOffset + bytesPerSample > fileBuffer.length) {
       result[i] = 0;
       continue;
     }
@@ -431,7 +557,7 @@ function buildFullDataset(
   if (actualDataFormat === 3) bytesPerSample = 2;
   if (actualDataFormat === 8) bytesPerSample = 1;
   const traceSize = traceHeaderSize + actualSampleCount * bytesPerSample;
-  const dataStart = 3600;
+  const dataStart = analysis.dataStart || 3600;
   const totalTraces = Math.floor((fileBuffer.length - dataStart) / traceSize);
 
   const traceIndex = new Map<string, number>();
@@ -463,7 +589,8 @@ function buildFullDataset(
       actualSampleCount,
       actualDataFormat,
       bigEndian,
-      traceSize
+      traceSize,
+      dataStart
     );
     for (let s = 0; s < traceData.length; s++) {
       if (traceData[s] < minVal) minVal = traceData[s];
@@ -474,8 +601,31 @@ function buildFullDataset(
   const inlineArr = Array.from(inlineSet).sort((a, b) => a - b);
   const crosslineArr = Array.from(crosslineSet).sort((a, b) => a - b);
 
-  const inlineStep = inlineArr.length > 1 ? inlineArr[1] - inlineArr[0] : 25;
-  const crosslineStep = crosslineArr.length > 1 ? crosslineArr[1] - crosslineArr[0] : 25;
+  let inlineStep = 1;
+  let crosslineStep = 1;
+  if (inlineArr.length > 1) {
+    const steps: number[] = [];
+    for (let i = 1; i < inlineArr.length; i++) {
+      const diff = inlineArr[i] - inlineArr[i - 1];
+      if (diff > 0) steps.push(diff);
+    }
+    inlineStep = steps.length > 0 ? Math.min(...steps) : 1;
+  }
+  if (crosslineArr.length > 1) {
+    const steps: number[] = [];
+    for (let i = 1; i < crosslineArr.length; i++) {
+      const diff = crosslineArr[i] - crosslineArr[i - 1];
+      if (diff > 0) steps.push(diff);
+    }
+    crosslineStep = steps.length > 0 ? Math.min(...steps) : 1;
+  }
+
+  const calculatedInlineCount = inlineArr.length > 1 
+    ? Math.floor((inlineArr[inlineArr.length - 1] - inlineArr[0]) / inlineStep) + 1
+    : Math.max(1, inlineArr.length);
+  const calculatedCrosslineCount = crosslineArr.length > 1
+    ? Math.floor((crosslineArr[crosslineArr.length - 1] - crosslineArr[0]) / crosslineStep) + 1
+    : Math.max(1, crosslineArr.length);
 
   const datasetId = `segy-${Date.now()}`;
 
@@ -484,8 +634,8 @@ function buildFullDataset(
     name: path.basename(filePath),
     filePath,
     fileSize: fileBuffer.length,
-    inlineCount: inlineArr.length,
-    crosslineCount: crosslineArr.length,
+    inlineCount: calculatedInlineCount,
+    crosslineCount: calculatedCrosslineCount,
     timeSamples: actualSampleCount,
     sampleInterval: analysis.sampleInterval,
     inlineStart: inlineArr.length > 0 ? inlineArr[0] : 1000,
@@ -498,8 +648,11 @@ function buildFullDataset(
     totalTraces,
     byteOrder: analysis.byteOrder,
     dataFormatCode: actualDataFormat,
+    bytesPerSample,
     inlineByte,
     crosslineByte,
+    dataStart,
+    traceSize,
     textHeader: analysis.textHeader,
     binaryHeader: analysis.binaryHeader,
     traceIndex,
@@ -516,10 +669,8 @@ function getSliceData(
   const fileBuffer = fs.readFileSync(dataset.filePath);
   const bigEndian = dataset.byteOrder !== 'little-endian';
   const traceHeaderSize = 240;
-  let bytesPerSample = 4;
-  if (dataset.dataFormatCode === 3) bytesPerSample = 2;
-  if (dataset.dataFormatCode === 8) bytesPerSample = 1;
-  const traceSize = traceHeaderSize + dataset.timeSamples * bytesPerSample;
+  const traceSize = dataset.traceSize || (traceHeaderSize + dataset.timeSamples * dataset.bytesPerSample);
+  const dataStart = dataset.dataStart || 3600;
 
   const inlineArr = Array.from(new Set(Array.from(dataset.traceIndex.keys()).map(k => parseInt(k.split('_')[0])))).sort((a, b) => a - b);
   const crosslineArr = Array.from(new Set(Array.from(dataset.traceIndex.keys()).map(k => parseInt(k.split('_')[1])))).sort((a, b) => a - b);
@@ -548,7 +699,8 @@ function getSliceData(
           dataset.timeSamples,
           dataset.dataFormatCode,
           bigEndian,
-          traceSize
+          traceSize,
+          dataStart
         );
         for (let t = 0; t < dataset.timeSamples && t < traceData.length; t++) {
           const sliceIdx = xlIdx * height + t;
@@ -576,7 +728,8 @@ function getSliceData(
           dataset.timeSamples,
           dataset.dataFormatCode,
           bigEndian,
-          traceSize
+          traceSize,
+          dataStart
         );
         for (let t = 0; t < dataset.timeSamples && t < traceData.length; t++) {
           const sliceIdx = ilIdx * height + t;
@@ -606,7 +759,8 @@ function getSliceData(
             dataset.timeSamples,
             dataset.dataFormatCode,
             bigEndian,
-            traceSize
+            traceSize,
+            dataStart
           );
           const sliceIdx = ilIdx * height + xlIdx;
           const val = traceData[timeIdx] || 0;
@@ -634,10 +788,8 @@ function getVolumeData(dataset: SegyDataset): { data: Float32Array; minValue: nu
   const fileBuffer = fs.readFileSync(dataset.filePath);
   const bigEndian = dataset.byteOrder !== 'little-endian';
   const traceHeaderSize = 240;
-  let bytesPerSample = 4;
-  if (dataset.dataFormatCode === 3) bytesPerSample = 2;
-  if (dataset.dataFormatCode === 8) bytesPerSample = 1;
-  const traceSize = traceHeaderSize + dataset.timeSamples * bytesPerSample;
+  const traceSize = dataset.traceSize || (traceHeaderSize + dataset.timeSamples * dataset.bytesPerSample);
+  const dataStart = dataset.dataStart || 3600;
 
   const inlineArr = Array.from(new Set(Array.from(dataset.traceIndex.keys()).map(k => parseInt(k.split('_')[0])))).sort((a, b) => a - b);
   const crosslineArr = Array.from(new Set(Array.from(dataset.traceIndex.keys()).map(k => parseInt(k.split('_')[1])))).sort((a, b) => a - b);
@@ -660,7 +812,8 @@ function getVolumeData(dataset: SegyDataset): { data: Float32Array; minValue: nu
           dataset.timeSamples,
           dataset.dataFormatCode,
           bigEndian,
-          traceSize
+          traceSize,
+          dataStart
         );
         for (let t = 0; t < dataset.timeSamples && t < traceData.length; t++) {
           const volIdx = (ilIdx * dataset.crosslineCount + xlIdx) * dataset.timeSamples + t;
