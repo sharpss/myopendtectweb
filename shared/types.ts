@@ -87,7 +87,7 @@ export interface SegyHeader {
   timeSamples: number;
 }
 
-export type DataLoadStrategy = 'full' | 'chunked' | 'pyramid';
+export type DataLoadStrategy = 'full' | 'chunked' | 'pyramid' | 'zarr';
 
 export type DataResolutionLevel = 'full' | 'half' | 'quarter' | 'eighth';
 

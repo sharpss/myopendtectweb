@@ -15,6 +15,7 @@ import authRoutes from './routes/auth.js'
 import seismicRoutes from './routes/seismic.js'
 import segyRoutes from './routes/segy.js'
 import attributeRoutes from './routes/attributes.js'
+import zarrRoutes from './routes/zarr.js'
 
 // for esm mode
 const __filename = fileURLToPath(import.meta.url)
@@ -36,6 +37,7 @@ app.use('/api/auth', authRoutes)
 app.use('/api/seismic', seismicRoutes)
 app.use('/api/segy', segyRoutes)
 app.use('/api/attributes', attributeRoutes)
+app.use('/api/zarr', zarrRoutes)
 
 /**
  * health

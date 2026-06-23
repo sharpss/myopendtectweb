@@ -3,6 +3,7 @@ import { DataProvider } from './BaseDataProvider';
 import { FullVolumeDataProvider } from './FullVolumeDataProvider';
 import { ChunkedDataProvider } from './ChunkedDataProvider';
 import { PyramidDataProvider } from './PyramidDataProvider';
+import { ZarrDataProvider } from './ZarrDataProvider';
 import { recommendLoadStrategy, estimateDatasetSizeMB, formatSizeMB } from '../../utils/dataStrategy';
 
 export function createDataProvider(
@@ -20,6 +21,8 @@ export function createDataProvider(
       return new ChunkedDataProvider(dataset);
     case 'pyramid':
       return new PyramidDataProvider(dataset);
+    case 'zarr':
+      return new ZarrDataProvider(dataset);
     default:
       return new FullVolumeDataProvider(dataset);
   }
@@ -64,6 +67,15 @@ export function getDataStrategyInfo(dataset: SeismicDataset, options: DataLoadOp
         suitable: fullSizeMB >= 10240,
         pros: ['初始加载极快', '可动态调整分辨率', '支持超大数据集'],
         cons: ['全分辨率需额外加载', '存储开销略大'],
+      },
+      {
+        id: 'zarr',
+        name: 'Zarr 云原生格式',
+        description: 'SEGY 转换为 Zarr 分块压缩格式，服务端存储，前端流式按需加载',
+        memoryUsage: '可配置缓存 (默认 512MB)',
+        suitable: fullSizeMB >= 1024,
+        pros: ['分块压缩，存储效率高', '支持 HTTP 范围请求', '多分辨率金字塔', '切片级缓存', '支持超大数据集'],
+        cons: ['需要服务端转换', '首次导入需等待转换'],
       },
     ],
   };
