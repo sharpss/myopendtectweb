@@ -471,17 +471,6 @@ export default function SliceView({ type, className }: SliceViewProps) {
     }
   };
   
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const delta = e.deltaY > 0 ? 1 : -1;
-    const maxIdx = type === 'inline' 
-      ? dataset.inlineCount - 1 
-      : type === 'crossline' 
-        ? dataset.crosslineCount - 1 
-        : dataset.timeSamples - 1;
-    setIndex(Math.max(0, Math.min(maxIdx, index + delta)));
-  };
-  
   const getCursorStyle = () => {
     if (activeTool === 'horizon' || activeTool === 'fault') return 'crosshair';
     if (activeTool === 'measure') return 'crosshair';
@@ -526,6 +515,26 @@ export default function SliceView({ type, className }: SliceViewProps) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeTool, isPicking, removeLastPickPoint, finishPicking, cancelPicking]);
 
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    
+    const wheelHandler = (e: WheelEvent) => {
+      e.preventDefault();
+      if (!dataset) return;
+      const delta = e.deltaY > 0 ? 1 : -1;
+      const maxIdx = type === 'inline' 
+        ? dataset.inlineCount - 1 
+        : type === 'crossline' 
+          ? dataset.crosslineCount - 1 
+          : dataset.timeSamples - 1;
+      setIndex(Math.max(0, Math.min(maxIdx, index + delta)));
+    };
+    
+    container.addEventListener('wheel', wheelHandler, { passive: false });
+    return () => container.removeEventListener('wheel', wheelHandler);
+  }, [dataset, type, index, setIndex]);
+
   const handleAutoTrack = (direction: 'forward' | 'backward') => {
     if (activeTool === 'horizon' && activeHorizonId) {
       autoTrackHorizon(activeHorizonId, type as SliceType, index, direction, 10);
@@ -536,7 +545,6 @@ export default function SliceView({ type, className }: SliceViewProps) {
     <div 
       ref={containerRef} 
       className={cn('relative bg-[#0f172a] overflow-hidden', className || '')}
-      onWheel={handleWheel}
       onMouseMove={handleMouseMove}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
