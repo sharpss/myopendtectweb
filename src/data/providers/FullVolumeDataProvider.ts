@@ -49,13 +49,46 @@ export class FullVolumeDataProvider extends BaseDataProvider {
         currentStage: `加载数据体 (${scaledDims.inlineCount} × ${scaledDims.crosslineCount} × ${scaledDims.timeSamples})...`,
       });
 
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      let rawData: Float32Array;
+      let minVal: number;
+      let maxVal: number;
 
-      const rawData = getMockSeismicData();
+      if (this._dataset.source === 'segy' || this._dataset.source === 'api') {
+        const remoteId = this._dataset.remoteId || this._dataset.id;
+        const response = await fetch(`/api/segy/datasets/${remoteId}/volume`);
+        if (!response.ok) {
+          throw new Error('Failed to load volume data from server');
+        }
+        const result = await response.json();
+        
+        this.emitProgress({
+          total: 100,
+          loaded: 60,
+          currentStage: '处理数据...',
+        });
+        
+        rawData = new Float32Array(result.data.data);
+        minVal = result.data.minValue;
+        maxVal = result.data.maxValue;
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        rawData = getMockSeismicData();
+        minVal = this._dataset.minValue ?? Infinity;
+        maxVal = this._dataset.maxValue ?? -Infinity;
+        
+        if (!isFinite(minVal) || !isFinite(maxVal)) {
+          const step = Math.max(1, Math.floor(rawData.length / 10000));
+          for (let i = 0; i < rawData.length; i += step) {
+            const val = rawData[i];
+            if (val < minVal) minVal = val;
+            if (val > maxVal) maxVal = val;
+          }
+        }
+      }
 
       this.emitProgress({
         total: 100,
-        loaded: 50,
+        loaded: 70,
         currentStage: '处理数据...',
       });
 
@@ -71,14 +104,6 @@ export class FullVolumeDataProvider extends BaseDataProvider {
         this.data = rawData;
       }
 
-      let minVal = Infinity;
-      let maxVal = -Infinity;
-      const step = Math.max(1, Math.floor(this.data.length / 10000));
-      for (let i = 0; i < this.data.length; i += step) {
-        const val = this.data[i];
-        if (val < minVal) minVal = val;
-        if (val > maxVal) maxVal = val;
-      }
       this.minValue = minVal;
       this.maxValue = maxVal;
 

@@ -18,6 +18,9 @@ export interface SeismicDataset {
   crosslineStep: number;
   source: 'mock' | 'segy' | 'api';
   createdAt: Date;
+  minValue?: number;
+  maxValue?: number;
+  remoteId?: string;
 }
 
 export interface Horizon {

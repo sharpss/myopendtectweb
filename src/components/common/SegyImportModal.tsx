@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef, useMemo, useEffect } from 'react';
 import {
   Upload,
   FileText,
@@ -23,6 +23,7 @@ import {
   formatSegyTextHeader,
   detectEbcdic,
 } from '../../utils/segyUtils';
+import { useSeismicStore } from '../../store/seismicStore';
 
 interface SegyImportModalProps {
   isOpen: boolean;
@@ -43,6 +44,7 @@ export default function SegyImportModal({
   const [parsedData, setParsedData] = useState<any>(null);
   const [isParsing, setIsParsing] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
+  const [importStage, setImportStage] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [showTextHeader, setShowTextHeader] = useState(false);
   const [textHeaderLines, setTextHeaderLines] = useState<string[]>([]);
@@ -51,6 +53,14 @@ export default function SegyImportModal({
   const [traceHeaderData, setTraceHeaderData] = useState<Record<number, number>>({});
   const [searchByte, setSearchByte] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { loadProgress, isLoading } = useSeismicStore();
+
+  useEffect(() => {
+    if (step === 'importing' && loadProgress) {
+      setImportProgress(loadProgress.percentage);
+      setImportStage(loadProgress.currentStage);
+    }
+  }, [step, loadProgress]);
 
   const [options, setOptions] = useState<SegyImportOptions>({
     datasetName: '',
@@ -318,17 +328,18 @@ export default function SegyImportModal({
   const startImport = async () => {
     setStep('importing');
     setImportProgress(0);
+    setImportStage('准备导入...');
+    setError(null);
 
-    for (let i = 0; i <= 100; i += 5) {
-      await new Promise((r) => setTimeout(r, 100));
-      setImportProgress(i);
+    try {
+      if (onImport && selectedFile) {
+        await onImport(selectedFile, options);
+      }
+      setStep('done');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '导入失败');
+      setStep('options');
     }
-
-    if (onImport && selectedFile) {
-      await onImport(selectedFile, options);
-    }
-
-    setStep('done');
   };
 
   const steps = [
@@ -983,24 +994,31 @@ export default function SegyImportModal({
           <div className="py-8 space-y-4">
             <div className="text-center">
               <div className="w-16 h-16 mx-auto rounded-full bg-blue-500/20 flex items-center justify-center">
-                <Upload className="w-8 h-8 text-blue-400 animate-bounce" />
+                <Upload className="w-8 h-8 text-blue-400 animate-pulse" />
               </div>
-              <p className="mt-4 text-sm text-slate-200">正在导入数据...</p>
+              <p className="mt-4 text-sm text-slate-200">{importStage || '正在导入数据...'}</p>
               <p className="text-xs text-slate-400 mt-1">{selectedFile?.name}</p>
             </div>
 
             <div className="space-y-2">
               <div className="flex justify-between text-xs text-slate-400">
                 <span>导入进度</span>
-                <span>{importProgress}%</span>
+                <span>{Math.round(importProgress)}%</span>
               </div>
               <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-blue-500 rounded-full transition-all duration-200"
+                  className="h-full bg-gradient-to-r from-blue-500 to-cyan-400 rounded-full transition-all duration-300 ease-out"
                   style={{ width: `${importProgress}%` }}
                 />
               </div>
             </div>
+
+            {error && (
+              <div className="flex items-center justify-center gap-1 text-xs text-red-400">
+                <AlertCircle className="w-3.5 h-3.5" />
+                {error}
+              </div>
+            )}
           </div>
         )}
 

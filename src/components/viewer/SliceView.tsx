@@ -29,11 +29,12 @@ interface CursorInfo {
 export default function SliceView({ type, className }: SliceViewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const { getSlice, datasets, activeDatasetId } = useSeismicStore();
+  const { getSlice, datasets, activeDatasetId, dataProvider, isLoading } = useSeismicStore();
   const { colormap, brightness, contrast, inlineIndex, crosslineIndex, timeIndex, setInlineIndex, setCrosslineIndex, setTimeIndex } = useViewerStore();
   const { activeTool, horizons, faults, activeHorizonId, activeFaultId, addPickPoint, isPicking, currentPickPoints, startPicking, finishPicking, cancelPicking, removeLastPickPoint, autoTrackHorizon } = useInterpretationStore();
   
   const dataset = datasets.find((d) => d.id === activeDatasetId);
+  const dataLoaded = dataProvider?.isLoaded ?? false;
   
   const [cursorInfo, setCursorInfo] = useState<CursorInfo | null>(null);
   const [measurePoints, setMeasurePoints] = useState<MeasurePoint[]>([]);
@@ -92,13 +93,15 @@ export default function SliceView({ type, className }: SliceViewProps) {
   useEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
-    if (!canvas || !container) return;
+    if (!canvas || !container || !dataset || !dataLoaded) return;
     
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     
     const sliceData = getSlice(type, index);
     const { data, width, height, minValue, maxValue } = sliceData;
+    
+    if (width === 0 || height === 0) return;
     
     const rect = container.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
@@ -396,7 +399,7 @@ export default function SliceView({ type, className }: SliceViewProps) {
     
     ctx.textAlign = 'left';
     
-  }, [type, index, colormap, brightness, contrast, getSlice, horizons, faults, activeHorizonId, isPicking, currentPickPoints, activeTool, measurePoints, dataset]);
+  }, [type, index, colormap, brightness, contrast, getSlice, horizons, faults, activeHorizonId, isPicking, currentPickPoints, activeTool, measurePoints, dataset, dataLoaded]);
   
   const handleMouseMove = (e: React.MouseEvent) => {
     const coords = getDataCoordinates(e.clientX, e.clientY);
@@ -546,6 +549,11 @@ export default function SliceView({ type, className }: SliceViewProps) {
             <Database className="w-6 h-6 text-slate-500" />
           </div>
           <p className="text-xs text-slate-400">未选择数据集</p>
+        </div>
+      ) : !dataLoaded ? (
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <div className="w-10 h-10 mb-3 rounded-full border-2 border-slate-600 border-t-cyan-400 animate-spin" />
+          <p className="text-xs text-slate-400">加载数据中...</p>
         </div>
       ) : (
         <>

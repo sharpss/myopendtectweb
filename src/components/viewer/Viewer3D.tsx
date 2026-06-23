@@ -11,8 +11,9 @@ import { Layers, Box, Grid3X3, Play, Pause, RotateCcw, Eye, EyeOff, Database } f
 import { cn } from '../../lib/utils';
 
 function useActiveDataset() {
-  const { datasets, activeDatasetId } = useSeismicStore();
-  return datasets.find((d) => d.id === activeDatasetId) || null;
+  const { datasets, activeDatasetId, dataProvider } = useSeismicStore();
+  const dataset = datasets.find((d) => d.id === activeDatasetId) || null;
+  return { dataset, dataLoaded: dataProvider?.isLoaded ?? false };
 }
 
 function createSliceTexture(
@@ -22,7 +23,9 @@ function createSliceTexture(
   colormap: ColormapType,
   minVal: number,
   maxVal: number
-): THREE.DataTexture {
+): THREE.DataTexture | null {
+  if (width <= 0 || height <= 0 || sliceData.length === 0) return null;
+  
   const colormapData = createColormapTexture(colormap, 256);
   const imageData = new Uint8Array(width * height * 4);
   
@@ -55,9 +58,9 @@ function InlineSlice() {
   const meshRef = useRef<THREE.Mesh>(null);
   const { inlineIndex, colormap, opacity, sliceVisibility } = useViewerStore();
   const { getSlice } = useSeismicStore();
-  const dataset = useActiveDataset();
+  const { dataset, dataLoaded } = useActiveDataset();
   
-  const sliceData = useMemo(() => dataset ? getSlice('inline', inlineIndex) : null, [inlineIndex, getSlice, dataset]);
+  const sliceData = useMemo(() => (dataset && dataLoaded) ? getSlice('inline', inlineIndex) : null, [inlineIndex, getSlice, dataset, dataLoaded]);
   
   const texture = useMemo(() => {
     if (!sliceData) return null;
@@ -105,9 +108,9 @@ function CrosslineSlice() {
   const meshRef = useRef<THREE.Mesh>(null);
   const { crosslineIndex, colormap, opacity, sliceVisibility } = useViewerStore();
   const { getSlice } = useSeismicStore();
-  const dataset = useActiveDataset();
+  const { dataset, dataLoaded } = useActiveDataset();
   
-  const sliceData = useMemo(() => dataset ? getSlice('crossline', crosslineIndex) : null, [crosslineIndex, getSlice, dataset]);
+  const sliceData = useMemo(() => (dataset && dataLoaded) ? getSlice('crossline', crosslineIndex) : null, [crosslineIndex, getSlice, dataset, dataLoaded]);
   
   const texture = useMemo(() => {
     if (!sliceData) return null;
@@ -155,9 +158,9 @@ function TimeSlice() {
   const meshRef = useRef<THREE.Mesh>(null);
   const { timeIndex, colormap, opacity, sliceVisibility } = useViewerStore();
   const { getSlice } = useSeismicStore();
-  const dataset = useActiveDataset();
+  const { dataset, dataLoaded } = useActiveDataset();
   
-  const sliceData = useMemo(() => dataset ? getSlice('timeslice', timeIndex) : null, [timeIndex, getSlice, dataset]);
+  const sliceData = useMemo(() => (dataset && dataLoaded) ? getSlice('timeslice', timeIndex) : null, [timeIndex, getSlice, dataset, dataLoaded]);
   
   const texture = useMemo(() => {
     if (!sliceData) return null;
@@ -203,7 +206,7 @@ function TimeSlice() {
 
 function VolumeBox() {
   const { sliceVisibility } = useViewerStore();
-  const dataset = useActiveDataset();
+  const { dataset } = useActiveDataset();
   
   if (!dataset || !sliceVisibility.volumeBox) return null;
   
@@ -220,7 +223,7 @@ function VolumeBox() {
 }
 
 function AxesLabels() {
-  const dataset = useActiveDataset();
+  const { dataset } = useActiveDataset();
   
   if (!dataset) return null;
   
@@ -251,7 +254,7 @@ function AxesLabels() {
 
 function Horizons() {
   const { horizons } = useInterpretationStore();
-  const dataset = useActiveDataset();
+  const { dataset } = useActiveDataset();
   
   if (!dataset) return null;
   
@@ -285,7 +288,7 @@ function Horizons() {
 
 function Faults() {
   const { faults } = useInterpretationStore();
-  const dataset = useActiveDataset();
+  const { dataset } = useActiveDataset();
   
   if (!dataset) return null;
   
@@ -320,7 +323,7 @@ function Faults() {
 function CameraController() {
   const { camera } = useThree();
   const { cameraPreset } = useViewerStore();
-  const dataset = useActiveDataset();
+  const { dataset } = useActiveDataset();
   const controlsRef = useRef<any>(null);
   
   useEffect(() => {
@@ -385,7 +388,7 @@ function CameraController() {
 
 function AnimationController() {
   const { isAnimating, animationSpeed, animationDirection, animationSlice, setInlineIndex, setCrosslineIndex, setTimeIndex, inlineIndex, crosslineIndex, timeIndex } = useViewerStore();
-  const dataset = useActiveDataset();
+  const { dataset } = useActiveDataset();
   const lastTimeRef = useRef(0);
   
   useFrame((state) => {
@@ -423,7 +426,7 @@ function AnimationController() {
 
 function Scene() {
   const { sliceVisibility } = useViewerStore();
-  const dataset = useActiveDataset();
+  const { dataset } = useActiveDataset();
   
   if (!dataset) return null;
   
@@ -703,7 +706,7 @@ function Viewer3DToolbar() {
 }
 
 function Viewer3DContent({ className }: Viewer3DProps) {
-  const dataset = useActiveDataset();
+  const { dataset, dataLoaded } = useActiveDataset();
   
   if (!dataset) {
     return (
@@ -719,6 +722,24 @@ function Viewer3DContent({ className }: Viewer3DProps) {
         </div>
         <div className="absolute top-2 left-2 flex items-center gap-2 px-2 py-1 bg-slate-900/80 rounded text-[11px] text-slate-400">
           <div className="w-2 h-2 rounded-full bg-slate-600" />
+          3D 视图
+        </div>
+      </div>
+    );
+  }
+  
+  if (!dataLoaded) {
+    return (
+      <div className={`relative bg-[#0a0a0f] flex flex-col items-center justify-center ${className || ''}`}>
+        <div className="text-center">
+          <div className="w-12 h-12 mx-auto mb-4 rounded-full border-2 border-slate-600 border-t-cyan-400 animate-spin" />
+          <h3 className="text-slate-300 text-sm font-medium mb-1">加载数据中...</h3>
+          <p className="text-slate-500 text-xs max-w-xs">
+            正在加载地震数据，请稍候
+          </p>
+        </div>
+        <div className="absolute top-2 left-2 flex items-center gap-2 px-2 py-1 bg-slate-900/80 rounded text-[11px] text-slate-400">
+          <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
           3D 视图
         </div>
       </div>
