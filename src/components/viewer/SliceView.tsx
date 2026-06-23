@@ -23,6 +23,8 @@ interface CursorInfo {
   y: number;
   dataX: number;
   dataY: number;
+  worldX: number;
+  worldY: number;
   value: number;
 }
 
@@ -76,15 +78,16 @@ export default function SliceView({ type, className }: SliceViewProps) {
     const value = sliceData.data[Math.min(Math.max(0, dataIdx), sliceData.data.length - 1)];
     
     let worldX: number, worldY: number;
+    const timeStart = dataset.timeStart ?? 0;
     if (type === 'timeslice') {
       worldX = dataset.inlineStart + dataX * dataset.inlineStep;
       worldY = dataset.crosslineStart + dataY * dataset.crosslineStep;
     } else if (type === 'inline') {
       worldX = dataset.crosslineStart + dataX * dataset.crosslineStep;
-      worldY = dataY * dataset.sampleInterval;
+      worldY = timeStart + dataY * dataset.sampleInterval;
     } else {
       worldX = dataset.inlineStart + dataX * dataset.inlineStep;
-      worldY = dataY * dataset.sampleInterval;
+      worldY = timeStart + dataY * dataset.sampleInterval;
     }
     
     return {
@@ -414,6 +417,8 @@ export default function SliceView({ type, className }: SliceViewProps) {
         y: coords.y,
         dataX: coords.dataX,
         dataY: coords.dataY,
+        worldX: coords.worldX,
+        worldY: coords.worldY,
         value: coords.value,
       } as CursorInfo);
     } else {
@@ -660,7 +665,7 @@ export default function SliceView({ type, className }: SliceViewProps) {
               {type === 'timeslice' ? 'Inline:' : type === 'inline' ? 'Crossline:' : 'Inline:'}
             </span>
             <span className="text-cyan-400">
-              {type === 'timeslice' ? cursorInfo.dataX : cursorInfo.dataX}
+              {Math.round(cursorInfo.worldX)}
             </span>
           </div>
           <div className="flex justify-between gap-3">
@@ -668,7 +673,7 @@ export default function SliceView({ type, className }: SliceViewProps) {
               {type === 'timeslice' ? 'Crossline:' : 'Time:'}
             </span>
             <span className="text-green-400">
-              {type === 'timeslice' ? cursorInfo.dataY : cursorInfo.dataY}
+              {type === 'timeslice' ? Math.round(cursorInfo.worldY) : cursorInfo.worldY.toFixed(1) + 'ms'}
             </span>
           </div>
           <div className="flex justify-between gap-3 border-t border-slate-700 pt-0.5">

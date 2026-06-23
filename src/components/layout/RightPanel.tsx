@@ -73,6 +73,13 @@ export default function RightPanel({ isCollapsed, onToggleCollapse }: RightPanel
   const { datasets, activeDatasetId } = useSeismicStore();
   const activeDataset = datasets.find((d) => d.id === activeDatasetId);
 
+  const inlineStart = activeDataset?.inlineStart ?? 0;
+  const crosslineStart = activeDataset?.crosslineStart ?? 0;
+  const inlineStep = activeDataset?.inlineStep ?? 1;
+  const crosslineStep = activeDataset?.crosslineStep ?? 1;
+  const timeStart = activeDataset?.timeStart ?? 0;
+  const sampleInterval = activeDataset?.sampleInterval ?? 4;
+
   const toggleSection = (id: string) => {
     setExpandedSections(prev => {
       const next = new Set(prev);
@@ -248,33 +255,33 @@ export default function RightPanel({ isCollapsed, onToggleCollapse }: RightPanel
                 <SliderControl
                   icon={<Ruler className="w-3 h-3" />}
                   label="Inline"
-                  value={inlineIndex}
-                  min={0}
-                  max={activeDataset ? activeDataset.inlineCount - 1 : 99}
-                  step={1}
-                  onChange={setInlineIndex}
+                  value={inlineStart + inlineIndex * inlineStep}
+                  min={inlineStart}
+                  max={activeDataset ? inlineStart + (activeDataset.inlineCount - 1) * inlineStep : inlineStart + 99}
+                  step={inlineStep}
+                  onChange={(v) => setInlineIndex(Math.round((v - inlineStart) / inlineStep))}
                 />
               )}
               {(viewMode === 'crossline' || viewMode === 'quad') && (
                 <SliderControl
                   icon={<Ruler className="w-3 h-3" />}
                   label="Crossline"
-                  value={crosslineIndex}
-                  min={0}
-                  max={activeDataset ? activeDataset.crosslineCount - 1 : 119}
-                  step={1}
-                  onChange={setCrosslineIndex}
+                  value={crosslineStart + crosslineIndex * crosslineStep}
+                  min={crosslineStart}
+                  max={activeDataset ? crosslineStart + (activeDataset.crosslineCount - 1) * crosslineStep : crosslineStart + 119}
+                  step={crosslineStep}
+                  onChange={(v) => setCrosslineIndex(Math.round((v - crosslineStart) / crosslineStep))}
                 />
               )}
               {(viewMode === 'timeslice' || viewMode === 'quad') && (
                 <SliderControl
                   icon={<Ruler className="w-3 h-3" />}
                   label="Time (ms)"
-                  value={timeIndex * (activeDataset ? activeDataset.sampleInterval : 4)}
-                  min={0}
-                  max={activeDataset ? (activeDataset.timeSamples - 1) * activeDataset.sampleInterval : 796}
-                  step={activeDataset ? activeDataset.sampleInterval : 4}
-                  onChange={(v) => setTimeIndex(Math.floor(v / (activeDataset ? activeDataset.sampleInterval : 4)))}
+                  value={timeStart + timeIndex * sampleInterval}
+                  min={timeStart}
+                  max={activeDataset ? timeStart + (activeDataset.timeSamples - 1) * sampleInterval : timeStart + 796}
+                  step={sampleInterval}
+                  onChange={(v) => setTimeIndex(Math.round((v - timeStart) / sampleInterval))}
                   unit="ms"
                 />
               )}

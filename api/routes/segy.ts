@@ -244,6 +244,7 @@ function parseTraceHeader(
     crossline: readInt32(buffer, offset + crosslineByte - 1, bigEndian),
     sampleCount: readInt16(buffer, offset + 114, bigEndian),
     sampleInterval: readInt16(buffer, offset + 116, bigEndian),
+    delayRecordingTime: readInt16(buffer, offset + 108, bigEndian),
   };
 }
 
@@ -565,6 +566,8 @@ function buildFullDataset(
   const crosslineSet = new Set<number>();
   let minVal = Infinity;
   let maxVal = -Infinity;
+  let delayTimeSum = 0;
+  let delayTimeCount = 0;
 
   for (let i = 0; i < totalTraces; i++) {
     const traceOffset = dataStart + i * traceSize;
@@ -582,6 +585,11 @@ function buildFullDataset(
     traceIndex.set(key, i);
     inlineSet.add(header.inline);
     crosslineSet.add(header.crossline);
+
+    if (header.delayRecordingTime > 0 && header.delayRecordingTime < 100000) {
+      delayTimeSum += header.delayRecordingTime;
+      delayTimeCount++;
+    }
 
     const traceData = readTraceData(
       fileBuffer,
@@ -629,6 +637,15 @@ function buildFullDataset(
 
   const datasetId = `segy-${Date.now()}`;
 
+  const avgDelayTime = delayTimeCount > 0 ? Math.round(delayTimeSum / delayTimeCount) : 0;
+  let timeStartMs = 0;
+  if (avgDelayTime > 0 && avgDelayTime < 100000) {
+    timeStartMs = avgDelayTime;
+    if (avgDelayTime > 1000) {
+      timeStartMs = avgDelayTime / 1000;
+    }
+  }
+
   return {
     id: datasetId,
     name: path.basename(filePath),
@@ -640,7 +657,7 @@ function buildFullDataset(
     sampleInterval: analysis.sampleInterval,
     inlineStart: inlineArr.length > 0 ? inlineArr[0] : 1000,
     crosslineStart: crosslineArr.length > 0 ? crosslineArr[0] : 2000,
-    timeStart: 0,
+    timeStart: timeStartMs,
     inlineStep,
     crosslineStep,
     inlineRange: [inlineArr.length > 0 ? inlineArr[0] : 1, inlineArr.length > 0 ? inlineArr[inlineArr.length - 1] : 1],
@@ -672,8 +689,10 @@ function getSliceData(
   const traceSize = dataset.traceSize || (traceHeaderSize + dataset.timeSamples * dataset.bytesPerSample);
   const dataStart = dataset.dataStart || 3600;
 
-  const inlineArr = Array.from(new Set(Array.from(dataset.traceIndex.keys()).map(k => parseInt(k.split('_')[0])))).sort((a, b) => a - b);
-  const crosslineArr = Array.from(new Set(Array.from(dataset.traceIndex.keys()).map(k => parseInt(k.split('_')[1])))).sort((a, b) => a - b);
+  const inlineStart = dataset.inlineStart || 0;
+  const crosslineStart = dataset.crosslineStart || 0;
+  const inlineStep = dataset.inlineStep || 1;
+  const crosslineStep = dataset.crosslineStep || 1;
 
   let width: number;
   let height: number;
@@ -685,58 +704,66 @@ function getSliceData(
     width = dataset.crosslineCount;
     height = dataset.timeSamples;
     sliceData = new Float32Array(width * height);
-    const inlineVal = inlineArr[Math.max(0, Math.min(index, inlineArr.length - 1))];
+    const safeIdx = Math.max(0, Math.min(index, dataset.inlineCount - 1));
+    const inlineVal = inlineStart + safeIdx * inlineStep;
 
-    for (let xlIdx = 0; xlIdx < crosslineArr.length; xlIdx++) {
-      const xlVal = crosslineArr[xlIdx];
-      const key = `${inlineVal}_${xlVal}`;
-      const traceIdx = dataset.traceIndex.get(key);
+    for (const [key, traceIdx] of dataset.traceIndex.entries()) {
+      const [ilStr, xlStr] = key.split('_');
+      const ilVal = parseInt(ilStr);
+      const xlVal = parseInt(xlStr);
+      
+      if (ilVal !== inlineVal) continue;
+      
+      const xlIdx = Math.floor((xlVal - crosslineStart) / crosslineStep);
+      if (xlIdx < 0 || xlIdx >= width) continue;
 
-      if (traceIdx !== undefined) {
-        const traceData = readTraceData(
-          fileBuffer,
-          traceIdx,
-          dataset.timeSamples,
-          dataset.dataFormatCode,
-          bigEndian,
-          traceSize,
-          dataStart
-        );
-        for (let t = 0; t < dataset.timeSamples && t < traceData.length; t++) {
-          const sliceIdx = xlIdx * height + t;
-          sliceData[sliceIdx] = traceData[t];
-          if (traceData[t] < minVal) minVal = traceData[t];
-          if (traceData[t] > maxVal) maxVal = traceData[t];
-        }
+      const traceData = readTraceData(
+        fileBuffer,
+        traceIdx,
+        dataset.timeSamples,
+        dataset.dataFormatCode,
+        bigEndian,
+        traceSize,
+        dataStart
+      );
+      for (let t = 0; t < height && t < traceData.length; t++) {
+        const sliceIdx = xlIdx * height + t;
+        sliceData[sliceIdx] = traceData[t];
+        if (traceData[t] < minVal) minVal = traceData[t];
+        if (traceData[t] > maxVal) maxVal = traceData[t];
       }
     }
   } else if (type === 'crossline') {
     width = dataset.inlineCount;
     height = dataset.timeSamples;
     sliceData = new Float32Array(width * height);
-    const crosslineVal = crosslineArr[Math.max(0, Math.min(index, crosslineArr.length - 1))];
+    const safeIdx = Math.max(0, Math.min(index, dataset.crosslineCount - 1));
+    const crosslineVal = crosslineStart + safeIdx * crosslineStep;
 
-    for (let ilIdx = 0; ilIdx < inlineArr.length; ilIdx++) {
-      const ilVal = inlineArr[ilIdx];
-      const key = `${ilVal}_${crosslineVal}`;
-      const traceIdx = dataset.traceIndex.get(key);
+    for (const [key, traceIdx] of dataset.traceIndex.entries()) {
+      const [ilStr, xlStr] = key.split('_');
+      const ilVal = parseInt(ilStr);
+      const xlVal = parseInt(xlStr);
+      
+      if (xlVal !== crosslineVal) continue;
+      
+      const ilIdx = Math.floor((ilVal - inlineStart) / inlineStep);
+      if (ilIdx < 0 || ilIdx >= width) continue;
 
-      if (traceIdx !== undefined) {
-        const traceData = readTraceData(
-          fileBuffer,
-          traceIdx,
-          dataset.timeSamples,
-          dataset.dataFormatCode,
-          bigEndian,
-          traceSize,
-          dataStart
-        );
-        for (let t = 0; t < dataset.timeSamples && t < traceData.length; t++) {
-          const sliceIdx = ilIdx * height + t;
-          sliceData[sliceIdx] = traceData[t];
-          if (traceData[t] < minVal) minVal = traceData[t];
-          if (traceData[t] > maxVal) maxVal = traceData[t];
-        }
+      const traceData = readTraceData(
+        fileBuffer,
+        traceIdx,
+        dataset.timeSamples,
+        dataset.dataFormatCode,
+        bigEndian,
+        traceSize,
+        dataStart
+      );
+      for (let t = 0; t < height && t < traceData.length; t++) {
+        const sliceIdx = ilIdx * height + t;
+        sliceData[sliceIdx] = traceData[t];
+        if (traceData[t] < minVal) minVal = traceData[t];
+        if (traceData[t] > maxVal) maxVal = traceData[t];
       }
     }
   } else {
@@ -745,30 +772,30 @@ function getSliceData(
     sliceData = new Float32Array(width * height);
     const timeIdx = Math.max(0, Math.min(index, dataset.timeSamples - 1));
 
-    for (let ilIdx = 0; ilIdx < inlineArr.length; ilIdx++) {
-      const ilVal = inlineArr[ilIdx];
-      for (let xlIdx = 0; xlIdx < crosslineArr.length; xlIdx++) {
-        const xlVal = crosslineArr[xlIdx];
-        const key = `${ilVal}_${xlVal}`;
-        const traceIdx = dataset.traceIndex.get(key);
+    for (const [key, traceIdx] of dataset.traceIndex.entries()) {
+      const [ilStr, xlStr] = key.split('_');
+      const ilVal = parseInt(ilStr);
+      const xlVal = parseInt(xlStr);
+      
+      const ilIdx = Math.floor((ilVal - inlineStart) / inlineStep);
+      const xlIdx = Math.floor((xlVal - crosslineStart) / crosslineStep);
+      
+      if (ilIdx < 0 || ilIdx >= width || xlIdx < 0 || xlIdx >= height) continue;
 
-        if (traceIdx !== undefined) {
-          const traceData = readTraceData(
-            fileBuffer,
-            traceIdx,
-            dataset.timeSamples,
-            dataset.dataFormatCode,
-            bigEndian,
-            traceSize,
-            dataStart
-          );
-          const sliceIdx = ilIdx * height + xlIdx;
-          const val = traceData[timeIdx] || 0;
-          sliceData[sliceIdx] = val;
-          if (val < minVal) minVal = val;
-          if (val > maxVal) maxVal = val;
-        }
-      }
+      const traceData = readTraceData(
+        fileBuffer,
+        traceIdx,
+        dataset.timeSamples,
+        dataset.dataFormatCode,
+        bigEndian,
+        traceSize,
+        dataStart
+      );
+      const sliceIdx = ilIdx * height + xlIdx;
+      const val = traceData[timeIdx] || 0;
+      sliceData[sliceIdx] = val;
+      if (val < minVal) minVal = val;
+      if (val > maxVal) maxVal = val;
     }
   }
 
@@ -791,37 +818,41 @@ function getVolumeData(dataset: SegyDataset): { data: Float32Array; minValue: nu
   const traceSize = dataset.traceSize || (traceHeaderSize + dataset.timeSamples * dataset.bytesPerSample);
   const dataStart = dataset.dataStart || 3600;
 
-  const inlineArr = Array.from(new Set(Array.from(dataset.traceIndex.keys()).map(k => parseInt(k.split('_')[0])))).sort((a, b) => a - b);
-  const crosslineArr = Array.from(new Set(Array.from(dataset.traceIndex.keys()).map(k => parseInt(k.split('_')[1])))).sort((a, b) => a - b);
+  const inlineStart = dataset.inlineStart || 0;
+  const crosslineStart = dataset.crosslineStart || 0;
+  const inlineStep = dataset.inlineStep || 1;
+  const crosslineStep = dataset.crosslineStep || 1;
 
   const volume = new Float32Array(dataset.inlineCount * dataset.crosslineCount * dataset.timeSamples);
   let minVal = Infinity;
   let maxVal = -Infinity;
 
-  for (let ilIdx = 0; ilIdx < inlineArr.length; ilIdx++) {
-    const ilVal = inlineArr[ilIdx];
-    for (let xlIdx = 0; xlIdx < crosslineArr.length; xlIdx++) {
-      const xlVal = crosslineArr[xlIdx];
-      const key = `${ilVal}_${xlVal}`;
-      const traceIdx = dataset.traceIndex.get(key);
+  for (const [key, traceIdx] of dataset.traceIndex.entries()) {
+    const [ilStr, xlStr] = key.split('_');
+    const ilVal = parseInt(ilStr);
+    const xlVal = parseInt(xlStr);
 
-      if (traceIdx !== undefined) {
-        const traceData = readTraceData(
-          fileBuffer,
-          traceIdx,
-          dataset.timeSamples,
-          dataset.dataFormatCode,
-          bigEndian,
-          traceSize,
-          dataStart
-        );
-        for (let t = 0; t < dataset.timeSamples && t < traceData.length; t++) {
-          const volIdx = (ilIdx * dataset.crosslineCount + xlIdx) * dataset.timeSamples + t;
-          volume[volIdx] = traceData[t];
-          if (traceData[t] < minVal) minVal = traceData[t];
-          if (traceData[t] > maxVal) maxVal = traceData[t];
-        }
-      }
+    const ilIdx = Math.floor((ilVal - inlineStart) / inlineStep);
+    const xlIdx = Math.floor((xlVal - crosslineStart) / crosslineStep);
+
+    if (ilIdx < 0 || ilIdx >= dataset.inlineCount || xlIdx < 0 || xlIdx >= dataset.crosslineCount) {
+      continue;
+    }
+
+    const traceData = readTraceData(
+      fileBuffer,
+      traceIdx,
+      dataset.timeSamples,
+      dataset.dataFormatCode,
+      bigEndian,
+      traceSize,
+      dataStart
+    );
+    for (let t = 0; t < dataset.timeSamples && t < traceData.length; t++) {
+      const volIdx = (ilIdx * dataset.crosslineCount + xlIdx) * dataset.timeSamples + t;
+      volume[volIdx] = traceData[t];
+      if (traceData[t] < minVal) minVal = traceData[t];
+      if (traceData[t] > maxVal) maxVal = traceData[t];
     }
   }
 

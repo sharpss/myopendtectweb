@@ -129,6 +129,16 @@ export const SEGY_BYTE_PRESETS: SegyBytePreset[] = [
     elevationByte: 41,
   },
   {
+    name: 'G&G / 自定义格式',
+    description: 'Inline@9, Crossline@21 (常见非标准格式)',
+    inlineByte: 9,
+    crosslineByte: 21,
+    sampleIntervalByte: 117,
+    xByte: 73,
+    yByte: 77,
+    elevationByte: 41,
+  },
+  {
     name: 'ProMAX',
     description: 'Landmark ProMAX 软件输出',
     inlineByte: 189,
@@ -149,7 +159,7 @@ export const SEGY_BYTE_PRESETS: SegyBytePreset[] = [
   },
   {
     name: 'Paradigm / Focus',
-    description: 'Paradigm Focus / Echos',
+    description: 'Paradigm Focus / Echos (inline@9, crossline@13)',
     inlineByte: 9,
     crosslineByte: 13,
     sampleIntervalByte: 117,
