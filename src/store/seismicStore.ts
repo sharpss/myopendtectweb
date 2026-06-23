@@ -207,7 +207,7 @@ export const useSeismicStore = create<SeismicState>((set, get) => ({
         sampleInterval,
         inlineStart: safeVal(result.inlineStart, result.inlineRange?.[0] ?? 1),
         crosslineStart: safeVal(result.crosslineStart, result.crosslineRange?.[0] ?? 1),
-        timeStart: 0,
+        timeStart: safeVal(result.timeStart, 0),
         inlineStep: safeCount(result.inlineStep, 1),
         crosslineStep: safeCount(result.crosslineStep, 1),
         source: 'segy',

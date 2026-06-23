@@ -330,10 +330,10 @@ function analyzeSegyFile(
       if (traceOffset + ths > fileBuffer.length) break;
       const il = readInt32(fileBuffer, traceOffset + inlineByte - 1, be);
       const xl = readInt32(fileBuffer, traceOffset + crosslineByte - 1, be);
-      if (il !== undefined && il !== null && Math.abs(il) < 1000000 && il !== 0) {
+      if (il !== undefined && il !== null && isFinite(il) && il > 0 && il < 100000000) {
         inlines.add(il);
       }
-      if (xl !== undefined && xl !== null && Math.abs(xl) < 1000000 && xl !== 0) {
+      if (xl !== undefined && xl !== null && isFinite(xl) && xl > 0 && xl < 100000000) {
         crosslines.add(xl);
       }
     }
@@ -541,16 +541,15 @@ function buildFullDataset(
   dataFormatCode?: number
 ): SegyDataset | null {
   const fileBuffer = fs.readFileSync(filePath);
-  const bigEndian = byteOrder !== 'little-endian';
 
   const analysis = analyzeSegyFile(filePath, {
     inlineByte,
     crosslineByte,
-    byteOrder,
     sampleCount,
     dataFormatCode,
   });
 
+  const bigEndian = analysis.byteOrder !== 'little-endian';
   const actualSampleCount = sampleCount || analysis.sampleCount;
   const actualDataFormat = dataFormatCode || analysis.dataFormatCode;
   const traceHeaderSize = 240;
@@ -560,6 +559,13 @@ function buildFullDataset(
   const traceSize = traceHeaderSize + actualSampleCount * bytesPerSample;
   const dataStart = analysis.dataStart || 3600;
   const totalTraces = Math.floor((fileBuffer.length - dataStart) / traceSize);
+
+  const isValidInline = (v: number) => {
+    return v !== null && v !== undefined && isFinite(v) && v > 0 && v < 100000000;
+  };
+  const isValidCrossline = (v: number) => {
+    return v !== null && v !== undefined && isFinite(v) && v > 0 && v < 100000000;
+  };
 
   const traceIndex = new Map<string, number>();
   const inlineSet = new Set<number>();
@@ -580,6 +586,10 @@ function buildFullDataset(
       inlineByte,
       crosslineByte
     );
+
+    if (!isValidInline(header.inline) || !isValidCrossline(header.crossline)) {
+      continue;
+    }
 
     const key = `${header.inline}_${header.crossline}`;
     traceIndex.set(key, i);
@@ -609,13 +619,17 @@ function buildFullDataset(
   const inlineArr = Array.from(inlineSet).sort((a, b) => a - b);
   const crosslineArr = Array.from(crosslineSet).sort((a, b) => a - b);
 
+  if (inlineArr.length === 0 || crosslineArr.length === 0) {
+    throw new Error('No valid traces found. Please check inline/crossline byte positions and byte order.');
+  }
+
   let inlineStep = 1;
   let crosslineStep = 1;
   if (inlineArr.length > 1) {
     const steps: number[] = [];
     for (let i = 1; i < inlineArr.length; i++) {
       const diff = inlineArr[i] - inlineArr[i - 1];
-      if (diff > 0) steps.push(diff);
+      if (diff > 0 && diff < 10000) steps.push(diff);
     }
     inlineStep = steps.length > 0 ? Math.min(...steps) : 1;
   }
@@ -623,17 +637,17 @@ function buildFullDataset(
     const steps: number[] = [];
     for (let i = 1; i < crosslineArr.length; i++) {
       const diff = crosslineArr[i] - crosslineArr[i - 1];
-      if (diff > 0) steps.push(diff);
+      if (diff > 0 && diff < 10000) steps.push(diff);
     }
     crosslineStep = steps.length > 0 ? Math.min(...steps) : 1;
   }
 
-  const calculatedInlineCount = inlineArr.length > 1 
+  const calculatedInlineCount = Math.max(1, inlineArr.length > 1 
     ? Math.floor((inlineArr[inlineArr.length - 1] - inlineArr[0]) / inlineStep) + 1
-    : Math.max(1, inlineArr.length);
-  const calculatedCrosslineCount = crosslineArr.length > 1
+    : inlineArr.length);
+  const calculatedCrosslineCount = Math.max(1, crosslineArr.length > 1
     ? Math.floor((crosslineArr[crosslineArr.length - 1] - crosslineArr[0]) / crosslineStep) + 1
-    : Math.max(1, crosslineArr.length);
+    : crosslineArr.length);
 
   const datasetId = `segy-${Date.now()}`;
 
@@ -655,14 +669,14 @@ function buildFullDataset(
     crosslineCount: calculatedCrosslineCount,
     timeSamples: actualSampleCount,
     sampleInterval: analysis.sampleInterval,
-    inlineStart: inlineArr.length > 0 ? inlineArr[0] : 1000,
-    crosslineStart: crosslineArr.length > 0 ? crosslineArr[0] : 2000,
+    inlineStart: inlineArr[0],
+    crosslineStart: crosslineArr[0],
     timeStart: timeStartMs,
     inlineStep,
     crosslineStep,
-    inlineRange: [inlineArr.length > 0 ? inlineArr[0] : 1, inlineArr.length > 0 ? inlineArr[inlineArr.length - 1] : 1],
-    crosslineRange: [crosslineArr.length > 0 ? crosslineArr[0] : 1, crosslineArr.length > 0 ? crosslineArr[crosslineArr.length - 1] : 1],
-    totalTraces,
+    inlineRange: [inlineArr[0], inlineArr[inlineArr.length - 1]],
+    crosslineRange: [crosslineArr[0], crosslineArr[crosslineArr.length - 1]],
+    totalTraces: traceIndex.size,
     byteOrder: analysis.byteOrder,
     dataFormatCode: actualDataFormat,
     bytesPerSample,
@@ -699,6 +713,14 @@ function getSliceData(
   let sliceData: Float32Array;
   let minVal = Infinity;
   let maxVal = -Infinity;
+
+  const MAX_SLICE_SAMPLES = 64 * 1024 * 1024;
+  const sliceSize = type === 'timeslice' 
+    ? dataset.inlineCount * dataset.crosslineCount 
+    : (type === 'inline' ? dataset.crosslineCount : dataset.inlineCount) * dataset.timeSamples;
+  if (!isFinite(sliceSize) || sliceSize <= 0 || sliceSize > MAX_SLICE_SAMPLES) {
+    throw new Error(`Slice size ${sliceSize} exceeds maximum allowed size`);
+  }
 
   if (type === 'inline') {
     width = dataset.crosslineCount;
@@ -823,7 +845,13 @@ function getVolumeData(dataset: SegyDataset): { data: Float32Array; minValue: nu
   const inlineStep = dataset.inlineStep || 1;
   const crosslineStep = dataset.crosslineStep || 1;
 
-  const volume = new Float32Array(dataset.inlineCount * dataset.crosslineCount * dataset.timeSamples);
+  const MAX_SAMPLES = 256 * 1024 * 1024;
+  const totalSize = dataset.inlineCount * dataset.crosslineCount * dataset.timeSamples;
+  if (!isFinite(totalSize) || totalSize <= 0 || totalSize > MAX_SAMPLES) {
+    throw new Error(`Volume size ${totalSize} exceeds maximum allowed size ${MAX_SAMPLES}`);
+  }
+
+  const volume = new Float32Array(totalSize);
   let minVal = Infinity;
   let maxVal = -Infinity;
 
@@ -1103,6 +1131,7 @@ router.post('/import', upload.single('file'), (req: Request, res: Response) => {
       sampleInterval: dataset.sampleInterval,
       inlineStart: dataset.inlineStart,
       crosslineStart: dataset.crosslineStart,
+      timeStart: dataset.timeStart,
       inlineStep: dataset.inlineStep,
       crosslineStep: dataset.crosslineStep,
       inlineRange: dataset.inlineRange,
