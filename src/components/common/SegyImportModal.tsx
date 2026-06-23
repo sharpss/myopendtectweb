@@ -142,7 +142,8 @@ export default function SegyImportModal({
     setError(null);
 
     try {
-      const buffer = await selectedFile.slice(0, 3600).arrayBuffer();
+      const previewSize = Math.min(selectedFile.size, 3600 + 200 * 1024);
+      const buffer = await selectedFile.slice(0, previewSize).arrayBuffer();
       const uint8Array = new Uint8Array(buffer);
 
       const textHeaderBuffer = uint8Array.subarray(0, 3200);
@@ -163,7 +164,14 @@ export default function SegyImportModal({
       const dataFormatCode = view.getInt16(3224, bigEndian) || 5;
 
       const traceHeaderStart = 3600;
-      const bytesPerSample = 4;
+      let bytesPerSample = 4;
+      if (dataFormatCode === 1 || dataFormatCode === 2 || dataFormatCode === 5) {
+        bytesPerSample = 4;
+      } else if (dataFormatCode === 3) {
+        bytesPerSample = 2;
+      } else if (dataFormatCode === 8) {
+        bytesPerSample = 1;
+      }
       const traceSize = 240 + sampleCount * bytesPerSample;
 
       const readTraceHeader = (idx: number) => {
@@ -189,10 +197,10 @@ export default function SegyImportModal({
       for (let i = 0; i < sampleTraces; i++) {
         const th = readTraceHeader(i);
         if (th) {
-          const il = th[options.inlineByte] ?? 0;
-          const xl = th[options.crosslineByte] ?? 0;
-          if (il !== 0) inlineSet.add(il);
-          if (xl !== 0) crosslineSet.add(xl);
+          const il = th[options.inlineByte];
+          const xl = th[options.crosslineByte];
+          if (il !== undefined && il !== null && Math.abs(il) < 1000000) inlineSet.add(il);
+          if (xl !== undefined && xl !== null && Math.abs(xl) < 1000000) crosslineSet.add(xl);
         }
       }
 

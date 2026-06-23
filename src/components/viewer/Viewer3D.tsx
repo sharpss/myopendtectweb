@@ -97,7 +97,7 @@ function InlineSlice() {
   const height = timeSamples * sampleInterval;
   
   return (
-    <mesh ref={meshRef} position={[x, width / 2, height / 2]} rotation={[0, Math.PI / 2, 0]}>
+    <mesh ref={meshRef} position={[x, height / 2, width / 2]} rotation={[0, Math.PI / 2, 0]}>
       <planeGeometry args={[width, height]} />
       <meshBasicMaterial side={THREE.DoubleSide} transparent opacity={opacity} map={texture} />
     </mesh>
@@ -142,12 +142,12 @@ function CrosslineSlice() {
   const crosslineStep = dataset.crosslineStep;
   const sampleInterval = dataset.sampleInterval;
   
-  const y = crosslineIndex * crosslineStep;
+  const z = crosslineIndex * crosslineStep;
   const width = inlineCount * inlineStep;
   const height = timeSamples * sampleInterval;
   
   return (
-    <mesh ref={meshRef} position={[width / 2, y, height / 2]}>
+    <mesh ref={meshRef} position={[width / 2, height / 2, z]}>
       <planeGeometry args={[width, height]} />
       <meshBasicMaterial side={THREE.DoubleSide} transparent opacity={opacity} map={texture} />
     </mesh>
@@ -192,12 +192,12 @@ function TimeSlice() {
   const crosslineStep = dataset.crosslineStep;
   const sampleInterval = dataset.sampleInterval;
   
-  const z = timeIndex * sampleInterval;
+  const y = timeIndex * sampleInterval;
   const width = inlineCount * inlineStep;
   const depth = crosslineCount * crosslineStep;
   
   return (
-    <mesh ref={meshRef} position={[width / 2, depth / 2, z]} rotation={[-Math.PI / 2, 0, 0]}>
+    <mesh ref={meshRef} position={[width / 2, y, depth / 2]} rotation={[-Math.PI / 2, 0, 0]}>
       <planeGeometry args={[width, depth]} />
       <meshBasicMaterial side={THREE.DoubleSide} transparent opacity={opacity} map={texture} />
     </mesh>
@@ -211,8 +211,8 @@ function VolumeBox() {
   if (!dataset || !sliceVisibility.volumeBox) return null;
   
   const width = dataset.inlineCount * dataset.inlineStep;
-  const height = dataset.crosslineCount * dataset.crosslineStep;
-  const depth = dataset.timeSamples * dataset.sampleInterval;
+  const depth = dataset.crosslineCount * dataset.crosslineStep;
+  const height = dataset.timeSamples * dataset.sampleInterval;
   
   return (
     <mesh position={[width / 2, height / 2, depth / 2]}>
@@ -240,13 +240,13 @@ function AxesLabels() {
         <sphereGeometry args={[20, 16, 16]} />
         <meshBasicMaterial color="#ef4444" />
       </mesh>
-      <mesh position={[0, crosslineCount * crosslineStep + 50, 0]}>
-        <sphereGeometry args={[20, 16, 16]} />
-        <meshBasicMaterial color="#22c55e" />
-      </mesh>
-      <mesh position={[0, 0, timeSamples * sampleInterval + 50]}>
+      <mesh position={[0, timeSamples * sampleInterval + 50, 0]}>
         <sphereGeometry args={[20, 16, 16]} />
         <meshBasicMaterial color="#3b82f6" />
+      </mesh>
+      <mesh position={[0, 0, crosslineCount * crosslineStep + 50]}>
+        <sphereGeometry args={[20, 16, 16]} />
+        <meshBasicMaterial color="#22c55e" />
       </mesh>
     </group>
   );
@@ -264,8 +264,8 @@ function Horizons() {
         const positions = new Float32Array(horizon.points.length * 3);
         horizon.points.forEach((p, i) => {
           positions[i * 3] = p.x;
-          positions[i * 3 + 1] = p.y;
-          positions[i * 3 + 2] = p.z;
+          positions[i * 3 + 1] = p.z;
+          positions[i * 3 + 2] = p.y;
         });
         
         return (
@@ -298,8 +298,8 @@ function Faults() {
         const positions = new Float32Array(fault.vertices.length * 3);
         fault.vertices.forEach((p, i) => {
           positions[i * 3] = p.x;
-          positions[i * 3 + 1] = p.y;
-          positions[i * 3 + 2] = p.z;
+          positions[i * 3 + 1] = p.z;
+          positions[i * 3 + 2] = p.y;
         });
         
         return (
@@ -337,28 +337,28 @@ function CameraController() {
     const sampleInterval = dataset.sampleInterval;
     
     const centerX = (inlineCount * inlineStep) / 2;
-    const centerY = (crosslineCount * crosslineStep) / 2;
-    const centerZ = (timeSamples * sampleInterval) / 2;
+    const centerY = (timeSamples * sampleInterval) / 2;
+    const centerZ = (crosslineCount * crosslineStep) / 2;
     const maxDim = Math.max(inlineCount * inlineStep, crosslineCount * crosslineStep, timeSamples * sampleInterval);
     
     let targetPos: [number, number, number];
     
     switch (cameraPreset) {
       case 'front':
-        targetPos = [centerX, centerY - maxDim * 1.2, centerZ];
+        targetPos = [centerX, centerY, centerZ - maxDim * 1.2];
         break;
       case 'top':
-        targetPos = [centerX, centerY, centerZ + maxDim * 1.2];
+        targetPos = [centerX, centerY + maxDim * 1.2, centerZ];
         break;
       case 'side':
         targetPos = [centerX + maxDim * 1.2, centerY, centerZ];
         break;
       case 'iso':
-        targetPos = [centerX + maxDim * 0.8, centerY - maxDim * 0.8, centerZ + maxDim * 0.8];
+        targetPos = [centerX + maxDim * 0.8, centerY + maxDim * 0.6, centerZ - maxDim * 0.8];
         break;
       case 'perspective':
       default:
-        targetPos = [centerX + maxDim * 0.8, centerY - maxDim * 0.8, centerZ + maxDim * 0.6];
+        targetPos = [centerX + maxDim * 0.8, centerY + maxDim * 0.5, centerZ - maxDim * 0.8];
         break;
     }
     
@@ -450,7 +450,7 @@ function Scene() {
       
       {sliceVisibility.grid && (
         <Grid
-          position={[inlineCount * inlineStep / 2, crosslineCount * crosslineStep / 2, 0]}
+          position={[inlineCount * inlineStep / 2, 0, crosslineCount * crosslineStep / 2]}
           args={[
             inlineCount * inlineStep,
             crosslineCount * crosslineStep,
