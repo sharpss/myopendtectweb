@@ -86,3 +86,60 @@ export interface SegyHeader {
   crosslineCount: number;
   timeSamples: number;
 }
+
+export type DataLoadStrategy = 'full' | 'chunked' | 'pyramid';
+
+export type DataResolutionLevel = 'full' | 'half' | 'quarter' | 'eighth';
+
+export interface DataLoadProgress {
+  total: number;
+  loaded: number;
+  percentage: number;
+  currentStage: string;
+  speed: number;
+  eta: number;
+}
+
+export interface ChunkIndex {
+  inline: number;
+  crossline: number;
+  time: number;
+}
+
+export interface ChunkInfo {
+  id: string;
+  index: ChunkIndex;
+  size: { inline: number; crossline: number; time: number };
+  offset: ChunkIndex;
+  lastAccess: number;
+  isLoaded: boolean;
+  refCount: number;
+}
+
+export interface PyramidLevel {
+  level: number;
+  scale: number;
+  inlineCount: number;
+  crosslineCount: number;
+  timeSamples: number;
+  chunkSize: ChunkIndex;
+  totalChunks: ChunkIndex;
+}
+
+export interface DataLoadOptions {
+  strategy?: DataLoadStrategy;
+  targetResolution?: DataResolutionLevel;
+  maxMemoryMB?: number;
+  chunkSize?: Partial<ChunkIndex>;
+  onProgress?: (progress: DataLoadProgress) => void;
+  preferClientSide?: boolean;
+}
+
+export interface DataStats {
+  totalSizeMB: number;
+  loadedSizeMB: number;
+  cacheHitRate: number;
+  activeChunks: number;
+  resolutionLevel: DataResolutionLevel;
+  strategy: DataLoadStrategy;
+}
