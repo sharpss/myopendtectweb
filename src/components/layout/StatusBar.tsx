@@ -5,7 +5,7 @@ import { useInterpretationStore } from '../../store/interpretationStore';
 
 export default function StatusBar() {
   const { datasets, activeDatasetId } = useSeismicStore();
-  const { viewMode, inlineIndex, crosslineIndex, timeIndex } = useViewerStore();
+  const { viewMode, inlineIndex, crosslineIndex, timeIndex, cursorPosition } = useViewerStore();
   const { activeTool } = useInterpretationStore();
   const [currentTime, setCurrentTime] = useState(new Date());
   const [fps, setFps] = useState(60);
@@ -19,6 +19,12 @@ export default function StatusBar() {
   }, []);
 
   const activeDataset = datasets.find(d => d.id === activeDatasetId);
+  const inlineStart = activeDataset?.inlineStart ?? 0;
+  const crosslineStart = activeDataset?.crosslineStart ?? 0;
+  const inlineStep = activeDataset?.inlineStep ?? 1;
+  const crosslineStep = activeDataset?.crosslineStep ?? 1;
+  const timeStart = activeDataset?.timeStart ?? 0;
+  const sampleInterval = activeDataset?.sampleInterval ?? 4;
 
   const toolNames: Record<string, string> = {
     select: '选择工具',
@@ -43,21 +49,21 @@ export default function StatusBar() {
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-1">
           <span className="text-slate-500">Inline:</span>
-          <span className="text-blue-400">{inlineIndex}</span>
+          <span className="text-blue-400">{activeDataset ? inlineStart + inlineIndex * inlineStep : '---'}</span>
           <span className="text-slate-600">/</span>
-          <span>{activeDataset ? activeDataset.inlineCount - 1 : '---'}</span>
+          <span>{activeDataset ? inlineStart + (activeDataset.inlineCount - 1) * inlineStep : '---'}</span>
         </div>
         <div className="flex items-center gap-1">
           <span className="text-slate-500">Crossline:</span>
-          <span className="text-green-400">{crosslineIndex}</span>
+          <span className="text-green-400">{activeDataset ? crosslineStart + crosslineIndex * crosslineStep : '---'}</span>
           <span className="text-slate-600">/</span>
-          <span>{activeDataset ? activeDataset.crosslineCount - 1 : '---'}</span>
+          <span>{activeDataset ? crosslineStart + (activeDataset.crosslineCount - 1) * crosslineStep : '---'}</span>
         </div>
         <div className="flex items-center gap-1">
           <span className="text-slate-500">Time:</span>
-          <span className="text-amber-400">{activeDataset ? (timeIndex * activeDataset.sampleInterval).toFixed(0) : '0'}ms</span>
+          <span className="text-amber-400">{activeDataset ? (timeStart + timeIndex * sampleInterval).toFixed(0) : '0'}ms</span>
           <span className="text-slate-600">/</span>
-          <span>{activeDataset ? ((activeDataset.timeSamples - 1) * activeDataset.sampleInterval).toFixed(0) : '0'}ms</span>
+          <span>{activeDataset ? (timeStart + (activeDataset.timeSamples - 1) * sampleInterval).toFixed(0) : '0'}ms</span>
         </div>
       </div>
 
@@ -65,7 +71,11 @@ export default function StatusBar() {
 
       <div className="flex items-center gap-3">
         <span className="text-slate-500">值:</span>
-        <span className="text-cyan-400">---</span>
+        <span className="text-cyan-400 font-mono">
+          {cursorPosition?.value !== null && cursorPosition?.value !== undefined
+            ? cursorPosition.value.toFixed(4)
+            : '---'}
+        </span>
       </div>
 
       <div className="w-px h-4 bg-slate-700 mx-3" />

@@ -474,6 +474,139 @@ export default function SegyImportModal({
     }
   };
 
+  const autoDetectBytePositions = async () => {
+    if (!selectedFile || !parsedData) return;
+
+    setIsParsing(true);
+    try {
+      const dataFormatCode = parsedData.dataFormatCode || options.dataFormat || 5;
+      const sampleCount = parsedData.sampleCount || 1000;
+      const numExtHeaders = parsedData.numExtTextHeaders || 0;
+      const bigEndian = options.byteOrder === 'big-endian';
+      
+      let bytesPerSample = 4;
+      if (dataFormatCode === 1 || dataFormatCode === 2 || dataFormatCode === 5) bytesPerSample = 4;
+      else if (dataFormatCode === 3) bytesPerSample = 2;
+      else if (dataFormatCode === 8) bytesPerSample = 1;
+
+      const dataStart = 3600 + numExtHeaders * 3200;
+      const traceSize = 240 + sampleCount * bytesPerSample;
+      const previewTraces = 2000;
+      const bufferSize = Math.min(selectedFile.size, dataStart + previewTraces * traceSize);
+      const buffer = await selectedFile.slice(0, bufferSize).arrayBuffer();
+      const view = new DataView(buffer);
+
+      const candidatePositions = [
+        { il: 189, xl: 193, name: '标准 SEGY (Rev 1)' },
+        { il: 9, xl: 21, name: 'G&G / 自定义格式' },
+        { il: 5, xl: 21, name: 'ProMAX 格式' },
+        { il: 73, xl: 77, name: '坐标位置' },
+        { il: 1, xl: 5, name: '道序号位置' },
+        { il: 21, xl: 25, name: 'Ensemble 位置' },
+      ];
+
+      let bestScore = -1;
+      let bestCandidate = candidatePositions[0];
+      let bestInlineRange: [number, number] = [1, 1];
+      let bestCrosslineRange: [number, number] = [1, 1];
+      let bestInlineCount = 1;
+      let bestCrosslineCount = 1;
+
+      for (const candidate of candidatePositions) {
+        const inlineSet = new Set<number>();
+        const crosslineSet = new Set<number>();
+        const sampleTraces = Math.min(previewTraces, Math.floor((buffer.byteLength - dataStart) / traceSize));
+
+        for (let i = 0; i < sampleTraces; i++) {
+          const traceOffset = dataStart + i * traceSize;
+          if (traceOffset + 240 > buffer.byteLength) break;
+          
+          const il = view.getInt32(traceOffset + candidate.il - 1, bigEndian);
+          const xl = view.getInt32(traceOffset + candidate.xl - 1, bigEndian);
+          
+          if (isFinite(il) && il > 0 && il < 100000000) inlineSet.add(il);
+          if (isFinite(xl) && xl > 0 && xl < 100000000) crosslineSet.add(xl);
+        }
+
+        const inlineArr = Array.from(inlineSet).sort((a, b) => a - b);
+        const crosslineArr = Array.from(crosslineSet).sort((a, b) => a - b);
+
+        let score = 0;
+        let inlineCount = 1;
+        let crosslineCount = 1;
+        let inlineRange: [number, number] = [1, 1];
+        let crosslineRange: [number, number] = [1, 1];
+
+        if (inlineArr.length > 1) {
+          score += 10;
+          const minIl = inlineArr[0], maxIl = inlineArr[inlineArr.length - 1];
+          const steps = [];
+          for (let i = 1; i < inlineArr.length; i++) {
+            const diff = inlineArr[i] - inlineArr[i - 1];
+            if (diff > 0) steps.push(diff);
+          }
+          const stepIl = steps.length > 0 ? Math.min(...steps) : 1;
+          if (stepIl > 0 && stepIl < 1000) score += 10;
+          inlineCount = Math.floor((maxIl - minIl) / stepIl) + 1;
+          inlineRange = [minIl, maxIl];
+        }
+        if (crosslineArr.length > 1) {
+          score += 10;
+          const minXl = crosslineArr[0], maxXl = crosslineArr[crosslineArr.length - 1];
+          const steps = [];
+          for (let i = 1; i < crosslineArr.length; i++) {
+            const diff = crosslineArr[i] - crosslineArr[i - 1];
+            if (diff > 0) steps.push(diff);
+          }
+          const stepXl = steps.length > 0 ? Math.min(...steps) : 1;
+          if (stepXl > 0 && stepXl < 1000) score += 10;
+          crosslineCount = Math.floor((maxXl - minXl) / stepXl) + 1;
+          crosslineRange = [minXl, maxXl];
+        }
+
+        if (inlineArr.length > 5) score += 5;
+        if (crosslineArr.length > 5) score += 5;
+
+        const totalTraces = parsedData.estimatedTraces || sampleTraces;
+        if (totalTraces > 0) {
+          const ratio = (inlineCount * crosslineCount) / totalTraces;
+          if (ratio > 0.3 && ratio < 3) score += 15;
+          else if (ratio > 0.1 && ratio < 10) score += 5;
+        }
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestCandidate = candidate;
+          bestInlineCount = inlineCount;
+          bestCrosslineCount = crosslineCount;
+          bestInlineRange = inlineRange;
+          bestCrosslineRange = crosslineRange;
+        }
+      }
+
+      setOptions(prev => ({
+        ...prev,
+        inlineByte: bestCandidate.il,
+        crosslineByte: bestCandidate.xl,
+        preset: bestCandidate.name,
+      }));
+
+      setParsedData((prev: any) => ({
+        ...prev,
+        inlineCount: bestInlineCount,
+        crosslineCount: bestCrosslineCount,
+        inlineRange: bestInlineRange,
+        crosslineRange: bestCrosslineRange,
+      }));
+
+      await reparseWithNewBytes();
+    } catch (err) {
+      console.error('Auto-detect error:', err);
+    } finally {
+      setIsParsing(false);
+    }
+  };
+
   const reparseWithNewBytes = async () => {
     if (!selectedFile) return;
 
@@ -534,12 +667,6 @@ export default function SegyImportModal({
       const selectedTrace = readTraceHeaderFull(traceIndex);
       if (selectedTrace) {
         const { __offset, ...traceInt32 } = selectedTrace;
-        setTraceHeaderData(traceInt32);
-      }
-
-      const firstTrace = readTraceHeaderFull(0);
-      if (firstTrace && traceIndex === 0) {
-        const { __offset, ...traceInt32 } = firstTrace;
         setTraceHeaderData(traceInt32);
       }
 
@@ -1025,13 +1152,23 @@ export default function SegyImportModal({
                   </select>
                 </div>
 
-                <button
-                  className="w-full px-3 py-1.5 text-xs text-white bg-blue-600 hover:bg-blue-500 rounded transition-colors disabled:opacity-50"
-                  onClick={reparseWithNewBytes}
-                  disabled={isParsing}
-                >
-                  {isParsing ? '重新解析中...' : '应用并重新解析'}
-                </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    className="px-3 py-1.5 text-xs text-white bg-emerald-600 hover:bg-emerald-500 rounded transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
+                    onClick={autoDetectBytePositions}
+                    disabled={isParsing}
+                  >
+                    <Search className="w-3 h-3" />
+                    {isParsing ? '检测中...' : '自动检测'}
+                  </button>
+                  <button
+                    className="px-3 py-1.5 text-xs text-white bg-blue-600 hover:bg-blue-500 rounded transition-colors disabled:opacity-50"
+                    onClick={reparseWithNewBytes}
+                    disabled={isParsing}
+                  >
+                    {isParsing ? '解析中...' : '应用并重新解析'}
+                  </button>
+                </div>
 
                 <div className="p-2 bg-slate-700/50 rounded space-y-1">
                   <p className="text-[10px] text-slate-500 uppercase tracking-wide">

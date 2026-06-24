@@ -1,6 +1,6 @@
 import { useRef, useMemo, useEffect, Component, type ReactNode, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { OrbitControls, Grid, GizmoHelper, GizmoViewport } from '@react-three/drei';
+import { OrbitControls, Grid, GizmoHelper, GizmoViewport, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { useViewerStore } from '../../store/viewerStore';
 import { useSeismicStore } from '../../store/seismicStore';
@@ -233,6 +233,47 @@ function VolumeBox() {
   );
 }
 
+function SliceBorders() {
+  const { inlineIndex, crosslineIndex, timeIndex, sliceVisibility } = useViewerStore();
+  const { dataset } = useActiveDataset();
+  
+  if (!dataset) return null;
+  
+  const inlineCount = dataset.inlineCount;
+  const crosslineCount = dataset.crosslineCount;
+  const timeSamples = dataset.timeSamples;
+  const inlineStep = dataset.inlineStep;
+  const crosslineStep = dataset.crosslineStep;
+  const sampleInterval = dataset.sampleInterval;
+  
+  const volumeWidth = inlineCount * inlineStep;
+  const volumeDepth = crosslineCount * crosslineStep;
+  const volumeHeight = timeSamples * sampleInterval;
+  
+  return (
+    <group>
+      {sliceVisibility.inline && (
+        <lineSegments position={[inlineIndex * inlineStep, volumeHeight / 2, volumeDepth / 2]} rotation={[0, Math.PI / 2, 0]}>
+          <edgesGeometry args={[new THREE.PlaneGeometry(volumeDepth, volumeHeight)]} />
+          <lineBasicMaterial color="#3b82f6" linewidth={2} transparent opacity={0.8} />
+        </lineSegments>
+      )}
+      {sliceVisibility.crossline && (
+        <lineSegments position={[volumeWidth / 2, volumeHeight / 2, crosslineIndex * crosslineStep]}>
+          <edgesGeometry args={[new THREE.PlaneGeometry(volumeWidth, volumeHeight)]} />
+          <lineBasicMaterial color="#22c55e" linewidth={2} transparent opacity={0.8} />
+        </lineSegments>
+      )}
+      {sliceVisibility.timeslice && (
+        <lineSegments position={[volumeWidth / 2, timeIndex * sampleInterval, volumeDepth / 2]} rotation={[-Math.PI / 2, 0, 0]}>
+          <edgesGeometry args={[new THREE.PlaneGeometry(volumeWidth, volumeDepth)]} />
+          <lineBasicMaterial color="#f59e0b" linewidth={2} transparent opacity={0.8} />
+        </lineSegments>
+      )}
+    </group>
+  );
+}
+
 function AxesLabels() {
   const { dataset } = useActiveDataset();
   
@@ -245,20 +286,31 @@ function AxesLabels() {
   const crosslineStep = dataset.crosslineStep;
   const sampleInterval = dataset.sampleInterval;
   
+  const endX = inlineCount * inlineStep;
+  const endY = timeSamples * sampleInterval;
+  const endZ = crosslineCount * crosslineStep;
+  
   return (
     <group>
-      <mesh position={[inlineCount * inlineStep + 50, 0, 0]}>
-        <sphereGeometry args={[20, 16, 16]} />
-        <meshBasicMaterial color="#ef4444" />
-      </mesh>
-      <mesh position={[0, timeSamples * sampleInterval + 50, 0]}>
-        <sphereGeometry args={[20, 16, 16]} />
-        <meshBasicMaterial color="#3b82f6" />
-      </mesh>
-      <mesh position={[0, 0, crosslineCount * crosslineStep + 50]}>
-        <sphereGeometry args={[20, 16, 16]} />
-        <meshBasicMaterial color="#22c55e" />
-      </mesh>
+      <arrowHelper args={[new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 0), endX + 100, 0xef4444, 50, 30]} />
+      <arrowHelper args={[new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0), endY + 100, 0x3b82f6, 50, 30]} />
+      <arrowHelper args={[new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, 0), endZ + 100, 0x22c55e, 50, 30]} />
+      
+      <Html position={[endX + 150, 0, 0]} center>
+        <div className="text-red-400 text-xs font-bold bg-slate-900/80 px-1.5 py-0.5 rounded whitespace-nowrap">
+          Inline
+        </div>
+      </Html>
+      <Html position={[0, endY + 150, 0]} center>
+        <div className="text-blue-400 text-xs font-bold bg-slate-900/80 px-1.5 py-0.5 rounded whitespace-nowrap">
+          Time (ms)
+        </div>
+      </Html>
+      <Html position={[0, 0, endZ + 150]} center>
+        <div className="text-green-400 text-xs font-bold bg-slate-900/80 px-1.5 py-0.5 rounded whitespace-nowrap">
+          Crossline
+        </div>
+      </Html>
     </group>
   );
 }
@@ -455,6 +507,7 @@ function Scene() {
       <InlineSlice />
       <CrosslineSlice />
       <TimeSlice />
+      <SliceBorders />
       
       <Horizons />
       <Faults />

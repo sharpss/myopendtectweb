@@ -10,6 +10,13 @@ export type SliceVisibility = {
   grid: boolean;
 };
 
+export interface CursorPosition {
+  inline: number;
+  crossline: number;
+  time: number;
+  value: number | null;
+}
+
 interface ViewerStoreState {
   viewMode: ViewerMode;
   inlineIndex: number;
@@ -27,6 +34,7 @@ interface ViewerStoreState {
   animationSpeed: number;
   animationDirection: 'forward' | 'backward';
   animationSlice: 'inline' | 'crossline' | 'timeslice';
+  cursorPosition: CursorPosition | null;
   setViewMode: (mode: ViewerMode) => void;
   setInlineIndex: (index: number) => void;
   setCrosslineIndex: (index: number) => void;
@@ -44,6 +52,7 @@ interface ViewerStoreState {
   stopAnimation: () => void;
   setAnimationSpeed: (speed: number) => void;
   setAnimationDirection: (direction: 'forward' | 'backward') => void;
+  setCursorPosition: (pos: CursorPosition | null) => void;
 }
 
 export const useViewerStore = create<ViewerStoreState>((set, get) => ({
@@ -69,6 +78,7 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
   animationSpeed: 1,
   animationDirection: 'forward',
   animationSlice: 'timeslice',
+  cursorPosition: null,
 
   setViewMode: (mode) => set({ viewMode: mode }),
   setInlineIndex: (index) => set({ inlineIndex: index }),
@@ -91,4 +101,5 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
   stopAnimation: () => set({ isAnimating: false }),
   setAnimationSpeed: (speed) => set({ animationSpeed: speed }),
   setAnimationDirection: (direction) => set({ animationDirection: direction }),
+  setCursorPosition: (pos) => set({ cursorPosition: pos }),
 }));

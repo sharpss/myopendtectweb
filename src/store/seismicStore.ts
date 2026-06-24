@@ -36,6 +36,7 @@ interface SeismicState {
   setLoadStrategy: (strategy: DataLoadStrategy) => void;
   setResolution: (resolution: DataResolutionLevel) => Promise<void>;
   refreshStats: () => void;
+  clearError: () => void;
 }
 
 export const useSeismicStore = create<SeismicState>((set, get) => ({
@@ -303,6 +304,10 @@ export const useSeismicStore = create<SeismicState>((set, get) => ({
     if (provider && provider.isLoaded) {
       set({ stats: provider.getStats() });
     }
+  },
+
+  clearError: () => {
+    set({ error: null, isLoading: false });
   },
 }));
 
