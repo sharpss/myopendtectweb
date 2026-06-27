@@ -674,7 +674,7 @@ export default function SegyImportModal({
         byteOrder: bestByteOrder,
       }));
 
-      await reparseWithNewBytes();
+      await reparseWithNewBytes(bestByteOrder);
     } catch (err) {
       console.error('Auto-detect error:', err);
     } finally {
@@ -682,34 +682,40 @@ export default function SegyImportModal({
     }
   };
 
-  const reparseWithNewBytes = async () => {
+  const reparseWithNewBytes = async (overrideByteOrder?: 'big-endian' | 'little-endian') => {
     if (!selectedFile) return;
 
     setIsParsing(true);
     try {
-      const dataFormatCode = parsedData?.dataFormatCode || options.dataFormat || 5;
-      const sampleCount = parsedData?.sampleCount || 1000;
-      const numExtHeaders = parsedData?.numExtTextHeaders || 0;
-      
-      let bytesPerSample = 4;
-      if (dataFormatCode === 1 || dataFormatCode === 2 || dataFormatCode === 5) {
-        bytesPerSample = 4;
-      } else if (dataFormatCode === 3) {
-        bytesPerSample = 2;
-      } else if (dataFormatCode === 8) {
-        bytesPerSample = 1;
-      }
+      const byteOrder = overrideByteOrder || options.byteOrder;
+      const bigEndian = byteOrder === 'big-endian';
 
-      const dataStart = 3600 + numExtHeaders * 3200;
+      const previewSize = Math.min(selectedFile.size, 3600 + 5 * 1024 * 1024);
+      const buffer = await selectedFile.slice(0, previewSize).arrayBuffer();
+      const view = new DataView(buffer);
+
+      const bhOffset = 3200;
+      const sampleIntervalRaw = view.getUint16(bhOffset + 16, bigEndian);
+      const samplesPerTraceRaw = view.getUint16(bhOffset + 20, bigEndian);
+      const dataFormatCodeRaw = view.getUint16(bhOffset + 24, bigEndian);
+      const numExtTextHeaders = view.getInt16(bhOffset + 304, bigEndian);
+
+      let sampleCount = samplesPerTraceRaw || 1000;
+      let sampleInterval = sampleIntervalRaw || 4000;
+      let dataFormatCode = dataFormatCodeRaw || 5;
+
+      if (sampleCount <= 0 || sampleCount > 100000) sampleCount = 1000;
+      if (sampleInterval <= 0 || sampleInterval > 100000) sampleInterval = 4000;
+      if (dataFormatCode === 0 || dataFormatCode > 8) dataFormatCode = 5;
+
+      let bytesPerSample = 4;
+      if (dataFormatCode === 3) bytesPerSample = 2;
+      else if (dataFormatCode === 8) bytesPerSample = 1;
+
+      const extHeaders = Math.max(0, numExtTextHeaders);
+      const dataStart = 3600 + extHeaders * 3200;
       const traceSize = 240 + sampleCount * bytesPerSample;
       const previewTraces = 1000;
-      const bufferSize = Math.min(
-        selectedFile.size,
-        dataStart + previewTraces * traceSize
-      );
-      const buffer = await selectedFile.slice(0, bufferSize).arrayBuffer();
-      const view = new DataView(buffer);
-      const bigEndian = options.byteOrder === 'big-endian';
 
       const readTraceHeaderFull = (idx: number): TraceHeaderMap | null => {
         const traceOffset = dataStart + idx * traceSize;
@@ -728,12 +734,6 @@ export default function SegyImportModal({
         bytePos: number
       ): number => {
         if (bytePos < 1 || bytePos > 240 - 3) return 0;
-        const alignedPos = bytePos % 4 === 1 
-          ? bytePos 
-          : bytePos - (bytePos - 1) % 4;
-        if (th[alignedPos] !== undefined) {
-          return th[alignedPos];
-        }
         const traceOffset = th.__offset;
         if (traceOffset === undefined) return 0;
         return view.getInt32(traceOffset + bytePos - 1, bigEndian);
@@ -747,25 +747,27 @@ export default function SegyImportModal({
 
       const inlineSet = new Set<number>();
       const crosslineSet = new Set<number>();
+      let delaySum = 0;
+      let delayCount = 0;
       const sampleTraces = Math.min(
         previewTraces,
         Math.floor((buffer.byteLength - dataStart) / traceSize)
       );
 
+      const ilPos = options.inlineByte || 189;
+      const xlPos = options.crosslineByte || 193;
+
       for (let i = 0; i < sampleTraces; i++) {
-        const th = readTraceHeaderFull(i);
-        if (th) {
-          const ilPos = options.inlineByte || 189;
-          const xlPos = options.crosslineByte || 193;
-          const il = getTraceInt32(th, ilPos);
-          const xl = getTraceInt32(th, xlPos);
-          if (il !== undefined && il !== null && Math.abs(il) < 1000000 && il !== 0) {
-            inlineSet.add(il);
-          }
-          if (xl !== undefined && xl !== null && Math.abs(xl) < 1000000 && xl !== 0) {
-            crosslineSet.add(xl);
-          }
-        }
+        const traceOffset = dataStart + i * traceSize;
+        if (traceOffset + 240 > buffer.byteLength) break;
+
+        const il = view.getInt32(traceOffset + ilPos - 1, bigEndian);
+        const xl = view.getInt32(traceOffset + xlPos - 1, bigEndian);
+        const delay = view.getInt16(traceOffset + 108, bigEndian);
+
+        if (isFinite(il) && il > 0 && il < 100000000) inlineSet.add(il);
+        if (isFinite(xl) && xl > 0 && xl < 100000000) crosslineSet.add(xl);
+        if (delay >= 0 && delay < 60000) { delaySum += delay; delayCount++; }
       }
 
       const inlineArr = Array.from(inlineSet).sort((a, b) => a - b);
@@ -775,12 +777,12 @@ export default function SegyImportModal({
       let crosslineCount: number;
       let inlineRange: [number, number];
       let crosslineRange: [number, number];
-      const totalTraces = parsedData?.estimatedTraces || sampleTraces;
+      const totalTraces = Math.floor((selectedFile.size - dataStart) / traceSize);
 
       if (inlineArr.length > 1) {
         const minIl = inlineArr[0];
         const maxIl = inlineArr[inlineArr.length - 1];
-        const steps = [];
+        const steps: number[] = [];
         for (let i = 1; i < inlineArr.length; i++) {
           const diff = inlineArr[i] - inlineArr[i - 1];
           if (diff > 0) steps.push(diff);
@@ -799,7 +801,7 @@ export default function SegyImportModal({
       if (crosslineArr.length > 1) {
         const minXl = crosslineArr[0];
         const maxXl = crosslineArr[crosslineArr.length - 1];
-        const steps = [];
+        const steps: number[] = [];
         for (let i = 1; i < crosslineArr.length; i++) {
           const diff = crosslineArr[i] - crosslineArr[i - 1];
           if (diff > 0) steps.push(diff);
@@ -815,17 +817,19 @@ export default function SegyImportModal({
         crosslineRange = [1, crosslineCount];
       }
 
-      if (totalTraces > 0 && inlineCount * crosslineCount < totalTraces * 0.1) {
-        const estCount = Math.max(inlineCount, crosslineCount);
-        const otherCount = Math.ceil(totalTraces / estCount);
-        if (inlineArr.length >= crosslineArr.length) {
-          crosslineCount = otherCount;
-          crosslineRange = [1, otherCount];
-        } else {
-          inlineCount = otherCount;
-          inlineRange = [1, otherCount];
+      let timeStartMs = 0;
+      if (delayCount > 0) {
+        const avgDelay = Math.round(delaySum / delayCount);
+        if (avgDelay > 0 && avgDelay < 60000) {
+          const siMs = sampleInterval / 1000;
+          if (avgDelay * siMs < 60000) {
+            timeStartMs = avgDelay * siMs;
+          } else {
+            timeStartMs = avgDelay;
+          }
         }
       }
+      const timeEndMs = timeStartMs + ((sampleCount - 1) * sampleInterval) / 1000;
 
       setParsedData((prev: any) => ({
         ...prev,
@@ -833,6 +837,12 @@ export default function SegyImportModal({
         crosslineCount,
         inlineRange,
         crosslineRange,
+        timeRange: [timeStartMs, timeEndMs],
+        sampleCount,
+        sampleInterval: sampleInterval / 1000,
+        dataFormatCode,
+        byteOrder,
+        estimatedTraces: totalTraces,
       }));
     } catch (err) {
       console.error('Reparse error:', err);
@@ -1238,7 +1248,7 @@ export default function SegyImportModal({
                   </button>
                   <button
                     className="px-3 py-1.5 text-xs text-white bg-blue-600 hover:bg-blue-500 rounded transition-colors disabled:opacity-50"
-                    onClick={reparseWithNewBytes}
+                    onClick={() => reparseWithNewBytes()}
                     disabled={isParsing}
                   >
                     {isParsing ? '解析中...' : '应用并重新解析'}

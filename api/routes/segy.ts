@@ -561,22 +561,20 @@ function buildFullDataset(
   filePath: string,
   inlineByte: number,
   crosslineByte: number,
-  byteOrder: 'big-endian' | 'little-endian',
-  sampleCount?: number,
-  dataFormatCode?: number
+  _byteOrder: 'big-endian' | 'little-endian',
+  _sampleCount?: number,
+  _dataFormatCode?: number
 ): SegyDataset | null {
   const fileBuffer = fs.readFileSync(filePath);
 
   const analysis = analyzeSegyFile(filePath, {
     inlineByte,
     crosslineByte,
-    sampleCount,
-    dataFormatCode,
   });
 
   const bigEndian = analysis.byteOrder !== 'little-endian';
-  const actualSampleCount = sampleCount || analysis.sampleCount;
-  const actualDataFormat = dataFormatCode || analysis.dataFormatCode;
+  const actualSampleCount = analysis.sampleCount;
+  const actualDataFormat = analysis.dataFormatCode;
   const traceHeaderSize = 240;
   let bytesPerSample = 4;
   if (actualDataFormat === 3) bytesPerSample = 2;
