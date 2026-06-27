@@ -74,6 +74,7 @@ export default function SliceView({ type, className }: SliceViewProps) {
   
   const title = type === 'inline' ? 'Inline' : type === 'crossline' ? 'Crossline' : 'Time Slice';
   const axisLabel = type === 'inline' ? 'Inline' : type === 'crossline' ? 'Crossline' : 'Time';
+  const isProfile = type !== 'timeslice';
   
   const PLOT_MARGIN_LEFT = 55;
   const PLOT_MARGIN_TOP = 28;
