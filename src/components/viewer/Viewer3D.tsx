@@ -384,8 +384,8 @@ function Faults() {
 }
 
 function CameraController() {
-  const { camera } = useThree();
-  const { cameraPreset } = useViewerStore();
+  const { camera, gl } = useThree();
+  const { cameraPreset, projection } = useViewerStore();
   const { dataset } = useActiveDataset();
   const controlsRef = useRef<any>(null);
   
@@ -430,6 +430,31 @@ function CameraController() {
     const duration = 500;
     const startTime = performance.now();
     
+    if (projection === 'orthographic' && camera instanceof THREE.PerspectiveCamera) {
+      const aspect = gl.domElement.clientWidth / gl.domElement.clientHeight;
+      const frustumSize = maxDim * 1.5;
+      const newCamera = new THREE.OrthographicCamera(
+        (frustumSize * aspect) / -2,
+        (frustumSize * aspect) / 2,
+        frustumSize / 2,
+        frustumSize / -2,
+        0.1,
+        maxDim * 10
+      );
+      newCamera.position.copy(camera.position);
+      newCamera.lookAt(centerX, centerY, centerZ);
+      newCamera.up.copy(camera.up);
+      camera.copy(newCamera as any);
+      camera.updateProjectionMatrix();
+    } else if (projection === 'perspective' && camera instanceof THREE.OrthographicCamera) {
+      const newCamera = new THREE.PerspectiveCamera(50, gl.domElement.clientWidth / gl.domElement.clientHeight, 0.1, maxDim * 10);
+      newCamera.position.copy(camera.position);
+      newCamera.lookAt(centerX, centerY, centerZ);
+      newCamera.up.copy(camera.up);
+      camera.copy(newCamera as any);
+      camera.updateProjectionMatrix();
+    }
+    
     const animate = () => {
       const elapsed = performance.now() - startTime;
       const t = Math.min(elapsed / duration, 1);
@@ -444,7 +469,7 @@ function CameraController() {
     };
     
     animate();
-  }, [cameraPreset, camera, dataset]);
+  }, [cameraPreset, projection, camera, dataset, gl]);
   
   return null;
 }

@@ -22,6 +22,10 @@ interface InterpretationState {
   toggleFaultVisible: (id: string) => void;
   setActiveHorizon: (id: string | null) => void;
   setActiveFault: (id: string | null) => void;
+  updateHorizonColor: (id: string, color: string) => void;
+  updateFaultColor: (id: string, color: string) => void;
+  renameHorizon: (id: string, name: string) => void;
+  renameFault: (id: string, name: string) => void;
   startPicking: () => void;
   addPickPoint: (point: Point3D) => void;
   removeLastPickPoint: () => void;
@@ -139,6 +143,66 @@ export const useInterpretationStore = create<InterpretationState>((set, get) => 
 
   setActiveHorizon: (id) => set({ activeHorizonId: id }),
   setActiveFault: (id) => set({ activeFaultId: id }),
+
+  updateHorizonColor: (id, color) => {
+    const { horizons, faults, undoStack } = get();
+    const snapshot = {
+      horizons: JSON.parse(JSON.stringify(horizons)),
+      faults: JSON.parse(JSON.stringify(faults)),
+    };
+    set((state) => ({
+      horizons: state.horizons.map(h =>
+        h.id === id ? { ...h, color } : h
+      ),
+      undoStack: [...undoStack, snapshot].slice(-50),
+      redoStack: [],
+    }));
+  },
+
+  updateFaultColor: (id, color) => {
+    const { horizons, faults, undoStack } = get();
+    const snapshot = {
+      horizons: JSON.parse(JSON.stringify(horizons)),
+      faults: JSON.parse(JSON.stringify(faults)),
+    };
+    set((state) => ({
+      faults: state.faults.map(f =>
+        f.id === id ? { ...f, color } : f
+      ),
+      undoStack: [...undoStack, snapshot].slice(-50),
+      redoStack: [],
+    }));
+  },
+
+  renameHorizon: (id, name) => {
+    const { horizons, faults, undoStack } = get();
+    const snapshot = {
+      horizons: JSON.parse(JSON.stringify(horizons)),
+      faults: JSON.parse(JSON.stringify(faults)),
+    };
+    set((state) => ({
+      horizons: state.horizons.map(h =>
+        h.id === id ? { ...h, name } : h
+      ),
+      undoStack: [...undoStack, snapshot].slice(-50),
+      redoStack: [],
+    }));
+  },
+
+  renameFault: (id, name) => {
+    const { horizons, faults, undoStack } = get();
+    const snapshot = {
+      horizons: JSON.parse(JSON.stringify(horizons)),
+      faults: JSON.parse(JSON.stringify(faults)),
+    };
+    set((state) => ({
+      faults: state.faults.map(f =>
+        f.id === id ? { ...f, name } : f
+      ),
+      undoStack: [...undoStack, snapshot].slice(-50),
+      redoStack: [],
+    }));
+  },
 
   startPicking: () => set({ isPicking: true, currentPickPoints: [] }),
 

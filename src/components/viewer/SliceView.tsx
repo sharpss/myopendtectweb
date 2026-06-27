@@ -2,7 +2,7 @@ import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { useSeismicStore } from '../../store/seismicStore';
 import { useViewerStore } from '../../store/viewerStore';
 import { useInterpretationStore } from '../../store/interpretationStore';
-import { getColormapColor, applyBrightnessContrast, applyGain, applyAGC, findPeak, findTrough } from '../../utils/colormap';
+import { getColormapColor, applyBrightnessContrast, applyGain, applyAGC, findPeak, findTrough, findZeroCrossing } from '../../utils/colormap';
 import { Point3D, SliceType, SeismicSliceData, DisplayMode } from '../../../shared/types';
 import { cn } from '../../lib/utils';
 import { X, Undo2, Check, SkipForward, SkipBack, Database, ZoomIn, ZoomOut, Maximize2, Activity, Layers, Target, Move } from 'lucide-react';
@@ -937,6 +937,8 @@ export default function SliceView({ type, className }: SliceViewProps) {
         dataY = findPeak(processedData, width, height, coords.dataX, coords.dataY, 5);
       } else if (pickMode === 'trough' && isProfile) {
         dataY = findTrough(processedData, width, height, coords.dataX, coords.dataY, 5);
+      } else if (pickMode === 'zero_crossing' && isProfile) {
+        dataY = findZeroCrossing(processedData, width, height, coords.dataX, coords.dataY, 'up');
       }
       
       let point: Point3D;
@@ -1188,7 +1190,7 @@ export default function SliceView({ type, className }: SliceViewProps) {
             {(activeTool === 'horizon' || activeTool === 'fault') && (
               <div className="flex items-center gap-0.5 ml-1 px-1 py-0.5 bg-slate-900/90 rounded backdrop-blur-sm">
                 <span className="text-[9px] text-slate-500 mr-1">拾取:</span>
-                {(['manual', 'peak', 'trough'] as const).map(pm => (
+                {(['manual', 'peak', 'trough', 'zero_crossing'] as const).map(pm => (
                   <button
                     key={pm}
                     className={cn(
@@ -1196,9 +1198,13 @@ export default function SliceView({ type, className }: SliceViewProps) {
                       pickMode === pm ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'
                     )}
                     onClick={(e) => { e.stopPropagation(); useViewerStore.getState().setPickMode(pm); }}
-                    title={pm === 'manual' ? '手动拾取' : pm === 'peak' ? '波峰' : '波谷'}
+                    title={
+                      pm === 'manual' ? '手动拾取' :
+                      pm === 'peak' ? '波峰' :
+                      pm === 'trough' ? '波谷' : '零交叉点'
+                    }
                   >
-                    {pm === 'manual' ? '手' : pm === 'peak' ? '峰' : '谷'}
+                    {pm === 'manual' ? '手' : pm === 'peak' ? '峰' : pm === 'trough' ? '谷' : '零'}
                   </button>
                 ))}
               </div>
@@ -1290,7 +1296,7 @@ export default function SliceView({ type, className }: SliceViewProps) {
           
           {(activeTool === 'horizon' || activeTool === 'fault') && !isPicking && (
             <div className="absolute bottom-12 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-slate-900/95 rounded text-[10px] text-slate-400 z-10 backdrop-blur-sm border border-amber-500/20">
-              单击拾取 | 双击/Enter完成 | 右键/Esc取消 | 拾取模式: {pickMode === 'manual' ? '手动' : pickMode === 'peak' ? '波峰' : '波谷'}
+              单击拾取 | 双击/Enter完成 | 右键/Esc取消 | 拾取模式: {pickMode === 'manual' ? '手动' : pickMode === 'peak' ? '波峰' : pickMode === 'trough' ? '波谷' : '零交叉'}
             </div>
           )}
         </>

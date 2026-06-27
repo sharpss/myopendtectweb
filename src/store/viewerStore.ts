@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { ViewerMode, ColormapType, DisplayMode, PickMode, WigglePolarity, Point3D } from '../../shared/types';
 
 export type CameraPreset = 'perspective' | 'front' | 'top' | 'side' | 'iso';
+export type ProjectionMode = 'perspective' | 'orthographic';
 export type SliceVisibility = {
   inline: boolean;
   crossline: boolean;
@@ -38,6 +39,7 @@ interface ViewerStoreState {
   showAxes: boolean;
   showColorbar: boolean;
   cameraPreset: CameraPreset;
+  projection: ProjectionMode;
   sliceVisibility: SliceVisibility;
   isAnimating: boolean;
   animationSpeed: number;
@@ -66,6 +68,7 @@ interface ViewerStoreState {
   toggleAxes: () => void;
   toggleColorbar: () => void;
   setCameraPreset: (preset: CameraPreset) => void;
+  setProjection: (mode: ProjectionMode) => void;
   setSliceVisibility: (visibility: Partial<SliceVisibility>) => void;
   toggleSlice: (slice: keyof SliceVisibility) => void;
   startAnimation: (slice: 'inline' | 'crossline' | 'timeslice') => void;
@@ -96,6 +99,7 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
   showAxes: true,
   showColorbar: true,
   cameraPreset: 'perspective',
+  projection: 'perspective',
   sliceVisibility: {
     inline: true,
     crossline: true,
@@ -146,6 +150,7 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
   toggleAxes: () => set((state) => ({ showAxes: !state.showAxes })),
   toggleColorbar: () => set((state) => ({ showColorbar: !state.showColorbar })),
   setCameraPreset: (preset) => set({ cameraPreset: preset }),
+  setProjection: (mode) => set({ projection: mode }),
   setSliceVisibility: (visibility) =>
     set((state) => ({ sliceVisibility: { ...state.sliceVisibility, ...visibility } })),
   toggleSlice: (slice) =>

@@ -22,6 +22,7 @@ import {
 import { useViewerStore } from '../../store/viewerStore';
 import { useSeismicStore } from '../../store/seismicStore';
 import { ColormapType, DisplayMode, PickMode, WigglePolarity } from '../../../shared/types';
+import type { ProjectionMode } from '../../store/viewerStore';
 import { cn } from '../../lib/utils';
 
 type TabType = 'display' | 'colormap' | 'attributes' | 'settings';
@@ -54,6 +55,7 @@ const pickModes: { id: PickMode; label: string }[] = [
   { id: 'manual', label: '手动' },
   { id: 'peak', label: '波峰' },
   { id: 'trough', label: '波谷' },
+  { id: 'zero_crossing', label: '零交叉' },
 ];
 
 const wigglePolarities: { id: WigglePolarity; label: string }[] = [
@@ -89,6 +91,9 @@ export default function RightPanel({ isCollapsed, onToggleCollapse }: RightPanel
     wigglePolarity,
     pickMode,
     showCrosshair,
+    showAxes,
+    sliceVisibility,
+    projection,
     setColormap,
     setOpacity,
     setBrightness,
@@ -100,6 +105,9 @@ export default function RightPanel({ isCollapsed, onToggleCollapse }: RightPanel
     setWigglePolarity,
     setPickMode,
     setShowCrosshair,
+    toggleAxes,
+    setSliceVisibility,
+    setProjection,
     inlineIndex,
     crosslineIndex,
     timeIndex,
@@ -549,30 +557,59 @@ export default function RightPanel({ isCollapsed, onToggleCollapse }: RightPanel
             <div className="space-y-2">
               <div className="text-xs text-slate-400 font-medium">渲染设置</div>
               <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
-                <input type="checkbox" defaultChecked className="rounded" />
+                <input
+                  type="checkbox"
+                  checked={showAxes}
+                  onChange={() => toggleAxes()}
+                  className="rounded accent-blue-600"
+                />
                 显示坐标轴
               </label>
               <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
-                <input type="checkbox" defaultChecked className="rounded" />
-                显示色标
-              </label>
-              <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
-                <input type="checkbox" className="rounded" />
+                <input
+                  type="checkbox"
+                  checked={sliceVisibility.grid}
+                  onChange={() => setSliceVisibility({ grid: !sliceVisibility.grid })}
+                  className="rounded accent-blue-600"
+                />
                 显示网格
               </label>
               <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
-                <input type="checkbox" defaultChecked className="rounded" />
+                <input type="checkbox" defaultChecked className="rounded accent-blue-600" />
+                显示色标
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                <input type="checkbox" defaultChecked className="rounded accent-blue-600" />
                 抗锯齿
               </label>
+              <div className="pt-2 border-t border-slate-700">
+                <div className="text-[10px] text-slate-500 mb-2">相机投影</div>
+                <div className="flex gap-1">
+                  {(['perspective', 'orthographic'] as ProjectionMode[]).map((p) => (
+                    <button
+                      key={p}
+                      className={cn(
+                        'flex-1 px-2 py-1 rounded text-[10px] transition-colors',
+                        projection === p
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-slate-700/50 text-slate-400 hover:bg-slate-700'
+                      )}
+                      onClick={() => setProjection(p)}
+                    >
+                      {p === 'perspective' ? '透视' : '正交'}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
             <div className="space-y-2 pt-2 border-t border-slate-700">
               <div className="text-xs text-slate-400 font-medium">交互设置</div>
               <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
-                <input type="checkbox" defaultChecked className="rounded" />
+                <input type="checkbox" defaultChecked className="rounded accent-blue-600" />
                 反转滚轮方向
               </label>
               <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
-                <input type="checkbox" className="rounded" />
+                <input type="checkbox" className="rounded accent-blue-600" />
                 左键旋转/右键选择
               </label>
             </div>
