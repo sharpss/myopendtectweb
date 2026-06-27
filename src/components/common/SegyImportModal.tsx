@@ -188,6 +188,20 @@ export default function SegyImportModal({
           : new TextDecoder('ascii').decode(textHeaderBuffer);
         const lines = formatSegyTextHeader(textHeaderStr, 80);
 
+        // 从EBCDIC头解析Inline/Crossline范围提示
+        let ebcdicInlineRange: [number, number] | null = null;
+        let ebcdicCrosslineRange: [number, number] | null = null;
+        for (const line of lines) {
+          const ilMatch = line.match(/First\s+inline\s*:\s*(\d+)\s+Last\s+inline\s*:\s*(\d+)/i);
+          if (ilMatch) {
+            ebcdicInlineRange = [parseInt(ilMatch[1]), parseInt(ilMatch[2])];
+          }
+          const xlMatch = line.match(/First\s+xline\s*:\s*(\d+)\s+Last\s+xline\s*:\s*(\d+)/i);
+          if (xlMatch) {
+            ebcdicCrosslineRange = [parseInt(xlMatch[1]), parseInt(xlMatch[2])];
+          }
+        }
+
         const view = new DataView(buffer);
         const bhOffset = 3200;
         
@@ -238,8 +252,10 @@ export default function SegyImportModal({
 
         const candidatePositions = [
           { il: 9, xl: 21, name: 'G&G / ProMAX' },
+          { il: 21, xl: 9, name: 'G&G (反向)' },
           { il: 5, xl: 21, name: 'ProMAX' },
           { il: 189, xl: 193, name: 'SEGY Rev 1' },
+          { il: 193, xl: 189, name: 'SEGY Rev 1 (反向)' },
           { il: 73, xl: 77, name: '坐标' },
           { il: 21, xl: 25, name: 'Ensemble' },
         ];
@@ -333,7 +349,25 @@ export default function SegyImportModal({
 
           if (inlineArr.length > 20 && crosslineArr.length > 20) detectScore += 10;
 
-          if (cand.il === 9 && cand.xl === 21) detectScore += 3;
+          // 用EBCDIC头范围验证候选位置是否正确
+          if (ebcdicInlineRange && inlineArr.length > 0) {
+            const minIl = inlineArr[0];
+            const maxIl = inlineArr[inlineArr.length - 1];
+            if (minIl === ebcdicInlineRange[0] && maxIl === ebcdicInlineRange[1]) {
+              detectScore += 50;
+            } else if (minIl >= ebcdicInlineRange[0] - 5 && maxIl <= ebcdicInlineRange[1] + 5) {
+              detectScore += 20;
+            }
+          }
+          if (ebcdicCrosslineRange && crosslineArr.length > 0) {
+            const minXl = crosslineArr[0];
+            const maxXl = crosslineArr[crosslineArr.length - 1];
+            if (minXl === ebcdicCrosslineRange[0] && maxXl === ebcdicCrosslineRange[1]) {
+              detectScore += 50;
+            } else if (minXl >= ebcdicCrosslineRange[0] - 5 && maxXl <= ebcdicCrosslineRange[1] + 5) {
+              detectScore += 20;
+            }
+          }
 
           if (detectScore > bestDetectScore) {
             bestDetectScore = detectScore;
@@ -550,10 +584,22 @@ export default function SegyImportModal({
       const buffer = await selectedFile.slice(0, bufferSize).arrayBuffer();
       const view = new DataView(buffer);
 
+      // 从EBCDIC头解析Inline/Crossline范围
+      let ebcdicInlineRange: [number, number] | null = null;
+      let ebcdicCrosslineRange: [number, number] | null = null;
+      for (const line of textHeaderLines) {
+        const ilMatch = line.match(/First\s+inline\s*:\s*(\d+)\s+Last\s+inline\s*:\s*(\d+)/i);
+        if (ilMatch) ebcdicInlineRange = [parseInt(ilMatch[1]), parseInt(ilMatch[2])];
+        const xlMatch = line.match(/First\s+xline\s*:\s*(\d+)\s+Last\s+xline\s*:\s*(\d+)/i);
+        if (xlMatch) ebcdicCrosslineRange = [parseInt(xlMatch[1]), parseInt(xlMatch[2])];
+      }
+
       const candidatePositions = [
         { il: 9, xl: 21, name: 'G&G / ProMAX' },
+        { il: 21, xl: 9, name: 'G&G (反向)' },
         { il: 5, xl: 21, name: 'ProMAX' },
         { il: 189, xl: 193, name: '标准 SEGY (Rev 1)' },
+        { il: 193, xl: 189, name: 'SEGY Rev 1 (反向)' },
         { il: 73, xl: 77, name: '坐标位置' },
         { il: 21, xl: 25, name: 'Ensemble 位置' },
       ];
@@ -629,7 +675,20 @@ export default function SegyImportModal({
           if (inlineArr.length > 50) score += 10;
           if (crosslineArr.length > 50) score += 10;
 
-          if (candidate.il === 9 && candidate.xl === 21) score += 3;
+          // 用EBCDIC头范围验证候选位置
+          if (ebcdicInlineRange && inlineArr.length > 0) {
+            const minIl = inlineArr[0];
+            const maxIl = inlineArr[inlineArr.length - 1];
+            if (minIl === ebcdicInlineRange[0] && maxIl === ebcdicInlineRange[1]) score += 50;
+            else if (minIl >= ebcdicInlineRange[0] - 5 && maxIl <= ebcdicInlineRange[1] + 5) score += 20;
+          }
+          if (ebcdicCrosslineRange && crosslineArr.length > 0) {
+            const minXl = crosslineArr[0];
+            const maxXl = crosslineArr[crosslineArr.length - 1];
+            if (minXl === ebcdicCrosslineRange[0] && maxXl === ebcdicCrosslineRange[1]) score += 50;
+            else if (minXl >= ebcdicCrosslineRange[0] - 5 && maxXl <= ebcdicCrosslineRange[1] + 5) score += 20;
+          }
+
           if (useBE && dataFormatCode === 1) score += 10;
 
           const totalTraces = parsedData.estimatedTraces || sampleTraces;
