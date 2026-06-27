@@ -36,6 +36,7 @@ interface SeismicState {
   setLoadStrategy: (strategy: DataLoadStrategy) => void;
   setResolution: (resolution: DataResolutionLevel) => Promise<void>;
   refreshStats: () => void;
+  clearError: () => void;
 }
 
 export const useSeismicStore = create<SeismicState>((set, get) => ({
@@ -143,53 +144,79 @@ export const useSeismicStore = create<SeismicState>((set, get) => ({
     set({ isLoading: true, error: null, loadProgress: null });
 
     try {
-      const datasetId = `segy-${Date.now()}`;
-
       set({
         loadProgress: {
           total: 100,
           loaded: 10,
           percentage: 10,
-          currentStage: '读取 SEGY 文件头...',
+          currentStage: '上传 SEGY 文件...',
           speed: 0,
           eta: 0,
         },
       });
 
-      await new Promise((r) => setTimeout(r, 300));
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('datasetName', options.datasetName || file.name.replace(/\.(segy|sgy)$/i, ''));
+      formData.append('inlineByte', options.inlineByte.toString());
+      formData.append('crosslineByte', options.crosslineByte.toString());
+      formData.append('byteOrder', options.byteOrder);
+      formData.append('dataFormatCode', options.dataFormat.toString());
 
-      const mockInlineCount = Math.floor(Math.random() * 50) + 80;
-      const mockCrosslineCount = Math.floor(Math.random() * 60) + 100;
-      const mockTimeSamples = Math.floor(Math.random() * 100) + 150;
+      const response = await fetch('/api/segy/import', {
+        method: 'POST',
+        body: formData,
+      });
 
-      const newDataset: SeismicDataset = {
-        id: datasetId,
-        name: options.datasetName || file.name.replace(/\.(segy|sgy)$/i, ''),
-        inlineCount: mockInlineCount,
-        crosslineCount: mockCrosslineCount,
-        timeSamples: mockTimeSamples,
-        sampleInterval: 4,
-        inlineStart: 1000,
-        crosslineStart: 2000,
-        timeStart: 0,
-        inlineStep: 25,
-        crosslineStep: 25,
-        source: 'segy',
-        createdAt: new Date(),
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || '上传失败');
+      }
+
+      const result = await response.json();
+
+      const safeCount = (n: number, def: number = 1) => {
+        if (!isFinite(n) || isNaN(n) || n <= 0) return def;
+        return Math.max(1, Math.floor(n));
+      };
+      const safeVal = (n: number, def: number = 0) => {
+        if (!isFinite(n) || isNaN(n)) return def;
+        return n;
       };
 
-      set({
-        loadProgress: {
-          total: 100,
-          loaded: 40,
-          percentage: 40,
-          currentStage: '解析道头数据...',
-          speed: 0,
-          eta: 0,
-        },
+      const inlineCount = safeCount(result.inlineCount);
+      const crosslineCount = safeCount(result.crosslineCount);
+      const timeSamples = safeCount(result.timeSamples);
+      const sampleInterval = safeVal(result.sampleInterval, 4);
+
+      console.log('SEGY import result:', {
+        inlineCount, crosslineCount, timeSamples, sampleInterval,
+        inlineStart: result.inlineStart,
+        crosslineStart: result.crosslineStart,
+        inlineStep: result.inlineStep,
+        crosslineStep: result.crosslineStep,
+        minValue: result.minValue,
+        maxValue: result.maxValue,
       });
 
-      await new Promise((r) => setTimeout(r, 400));
+      const newDataset: SeismicDataset = {
+        id: result.datasetId,
+        name: result.name,
+        inlineCount,
+        crosslineCount,
+        timeSamples,
+        sampleInterval,
+        inlineStart: safeVal(result.inlineStart, result.inlineRange?.[0] ?? 1),
+        crosslineStart: safeVal(result.crosslineStart, result.crosslineRange?.[0] ?? 1),
+        timeStart: safeVal(result.timeStart, 0),
+        inlineStep: safeCount(result.inlineStep, 1),
+        crosslineStep: safeCount(result.crosslineStep, 1),
+        source: 'segy',
+        createdAt: new Date(),
+        minValue: safeVal(result.minValue, -1),
+        maxValue: safeVal(result.maxValue, 1),
+        remoteId: result.datasetId,
+      };
 
       const { datasets } = get();
       set({ datasets: [...datasets, newDataset] });
@@ -199,16 +226,14 @@ export const useSeismicStore = create<SeismicState>((set, get) => ({
           total: 100,
           loaded: 70,
           percentage: 70,
-          currentStage: '构建数据体...',
+          currentStage: '加载数据体到内存...',
           speed: 0,
           eta: 0,
         },
       });
 
-      await new Promise((r) => setTimeout(r, 300));
-
-      const strategyInfo = getDataStrategyInfo(newDataset);
-      const provider = createDataProvider(newDataset);
+      const strategyInfo = getDataStrategyInfo(newDataset, { strategy: 'full' });
+      const provider = createDataProvider(newDataset, { strategy: 'full' });
 
       const unsubscribe = provider.onProgress((progress) => {
         set({ loadProgress: progress });
@@ -217,7 +242,7 @@ export const useSeismicStore = create<SeismicState>((set, get) => ({
       await provider.load();
 
       set({
-        activeDatasetId: datasetId,
+        activeDatasetId: result.datasetId,
         dataProvider: provider,
         isLoading: false,
         stats: provider.getStats(),
@@ -279,6 +304,10 @@ export const useSeismicStore = create<SeismicState>((set, get) => ({
     if (provider && provider.isLoaded) {
       set({ stats: provider.getStats() });
     }
+  },
+
+  clearError: () => {
+    set({ error: null, isLoading: false });
   },
 }));
 

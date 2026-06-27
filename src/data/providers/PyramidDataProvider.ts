@@ -53,22 +53,75 @@ export class PyramidDataProvider extends BaseDataProvider {
 
       this.emitProgress({
         total: 100,
-        loaded: 30,
-        currentStage: '加载低分辨率预览数据...',
+        loaded: 10,
+        currentStage: '加载基础数据...',
       });
 
-      this.baseData = getMockSeismicData();
+      let rawData: Float32Array;
+      let rawMin = -1;
+      let rawMax = 1;
 
-      const coarsestLevel = 3;
-      await this.loadLevel(coarsestLevel);
+      if (this._dataset.source === 'segy' || this._dataset.source === 'api') {
+        const remoteId = this._dataset.remoteId || this._dataset.id;
+        const response = await fetch(`/api/segy/datasets/${remoteId}/volume`);
+        if (!response.ok) {
+          throw new Error('Failed to load volume data from server');
+        }
+        const result = await response.json();
+        rawData = new Float32Array(result.data.data);
+        rawMin = result.data.minValue;
+        rawMax = result.data.maxValue;
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        rawData = getMockSeismicData();
+        let minVal = Infinity;
+        let maxVal = -Infinity;
+        const step = Math.max(1, Math.floor(rawData.length / 10000));
+        for (let i = 0; i < rawData.length; i += step) {
+          const val = rawData[i];
+          if (val < minVal) minVal = val;
+          if (val > maxVal) maxVal = val;
+        }
+        rawMin = isFinite(minVal) ? minVal : -1;
+        rawMax = isFinite(maxVal) ? maxVal : 1;
+      }
+
+      this.baseData = rawData;
 
       this.emitProgress({
         total: 100,
-        loaded: 60,
-        currentStage: '加载中等分辨率数据...',
+        loaded: 40,
+        currentStage: '生成多分辨率层级...',
       });
 
-      await this.loadLevel(2);
+      const level0 = this.levels.get(0);
+      if (level0) {
+        level0.data = rawData;
+        level0.isLoaded = true;
+      }
+
+      for (let lvl = 1; lvl <= 3; lvl++) {
+        const levelData = this.levels.get(lvl);
+        if (levelData) {
+          const prevLevel = this.levels.get(lvl - 1);
+          const prevScale = lvl - 1 === 0 ? 1 : Math.pow(2, lvl - 1);
+          if (prevLevel && prevLevel.data) {
+            levelData.data = downsampleVolume(
+              prevLevel.data,
+              Math.max(1, Math.floor(this._dataset.inlineCount / prevScale)),
+              Math.max(1, Math.floor(this._dataset.crosslineCount / prevScale)),
+              Math.max(1, Math.floor(this._dataset.timeSamples / prevScale)),
+              2
+            );
+            levelData.isLoaded = true;
+          }
+        }
+        this.emitProgress({
+          total: 100,
+          loaded: 40 + lvl * 15,
+          currentStage: `生成分辨率层级 ${lvl}/3...`,
+        });
+      }
 
       this.activeLevel = this.resolutionToLevel(targetResolution);
 
@@ -78,7 +131,7 @@ export class PyramidDataProvider extends BaseDataProvider {
       this.emitProgress({
         total: 100,
         loaded: 100,
-        currentStage: '金字塔加载完成，可逐步细化',
+        currentStage: '金字塔加载完成',
       });
     } finally {
       this._isLoading = false;
@@ -193,62 +246,38 @@ export class PyramidDataProvider extends BaseDataProvider {
   }
 
   private buildPyramid(): void {
-    const { inlineCount, crosslineCount, timeSamples } = this._dataset;
+    const safeCount = (n: number) => {
+      if (!isFinite(n) || isNaN(n) || n <= 0) return 1;
+      return Math.max(1, Math.floor(n));
+    };
 
-    const levels: PyramidLevel[] = [
-      {
-        level: 0,
-        scale: 1,
-        inlineCount,
-        crosslineCount,
-        timeSamples,
-        chunkSize: { inline: 32, crossline: 32, time: 64 },
+    const inlineCount = safeCount(this._dataset.inlineCount);
+    const crosslineCount = safeCount(this._dataset.crosslineCount);
+    const timeSamples = safeCount(this._dataset.timeSamples);
+
+    const scales = [1, 2, 4, 8];
+    const levels: PyramidLevel[] = scales.map((scale, idx) => {
+      const il = Math.max(1, Math.floor(inlineCount / scale));
+      const xl = Math.max(1, Math.floor(crosslineCount / scale));
+      const ts = Math.max(1, Math.floor(timeSamples / scale));
+      const chunkIl = scale === 1 ? 32 : scale === 2 ? 32 : scale === 4 ? 16 : 8;
+      const chunkXl = scale === 1 ? 32 : scale === 2 ? 32 : scale === 4 ? 16 : 8;
+      const chunkT = scale === 1 ? 64 : scale === 2 ? 64 : scale === 4 ? 32 : 16;
+      
+      return {
+        level: idx,
+        scale,
+        inlineCount: il,
+        crosslineCount: xl,
+        timeSamples: ts,
+        chunkSize: { inline: chunkIl, crossline: chunkXl, time: chunkT },
         totalChunks: {
-          inline: Math.ceil(inlineCount / 32),
-          crossline: Math.ceil(crosslineCount / 32),
-          time: Math.ceil(timeSamples / 64),
+          inline: Math.ceil(il / chunkIl),
+          crossline: Math.ceil(xl / chunkXl),
+          time: Math.ceil(ts / chunkT),
         },
-      },
-      {
-        level: 1,
-        scale: 2,
-        inlineCount: Math.floor(inlineCount / 2),
-        crosslineCount: Math.floor(crosslineCount / 2),
-        timeSamples: Math.floor(timeSamples / 2),
-        chunkSize: { inline: 32, crossline: 32, time: 64 },
-        totalChunks: {
-          inline: Math.ceil(Math.floor(inlineCount / 2) / 32),
-          crossline: Math.ceil(Math.floor(crosslineCount / 2) / 32),
-          time: Math.ceil(Math.floor(timeSamples / 2) / 64),
-        },
-      },
-      {
-        level: 2,
-        scale: 4,
-        inlineCount: Math.floor(inlineCount / 4),
-        crosslineCount: Math.floor(crosslineCount / 4),
-        timeSamples: Math.floor(timeSamples / 4),
-        chunkSize: { inline: 16, crossline: 16, time: 32 },
-        totalChunks: {
-          inline: Math.ceil(Math.floor(inlineCount / 4) / 16),
-          crossline: Math.ceil(Math.floor(crosslineCount / 4) / 16),
-          time: Math.ceil(Math.floor(timeSamples / 4) / 32),
-        },
-      },
-      {
-        level: 3,
-        scale: 8,
-        inlineCount: Math.floor(inlineCount / 8),
-        crosslineCount: Math.floor(crosslineCount / 8),
-        timeSamples: Math.floor(timeSamples / 8),
-        chunkSize: { inline: 8, crossline: 8, time: 16 },
-        totalChunks: {
-          inline: Math.ceil(Math.floor(inlineCount / 8) / 8),
-          crossline: Math.ceil(Math.floor(crosslineCount / 8) / 8),
-          time: Math.ceil(Math.floor(timeSamples / 8) / 16),
-        },
-      },
-    ];
+      };
+    });
 
     levels.forEach((level) => {
       this.levels.set(level.level, {

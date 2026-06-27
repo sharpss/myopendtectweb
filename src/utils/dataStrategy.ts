@@ -1,12 +1,27 @@
 import { SeismicDataset, DataLoadStrategy, DataResolutionLevel, DataLoadOptions } from '../../shared/types';
 
+function safeDim(n: number): number {
+  if (!isFinite(n) || isNaN(n) || n <= 0) return 1;
+  return Math.max(1, Math.floor(n));
+}
+
 export function estimateVolumeSizeMB(
   inlineCount: number,
   crosslineCount: number,
   timeSamples: number,
   bytesPerSample: number = 4
 ): number {
-  const totalBytes = inlineCount * crosslineCount * timeSamples * bytesPerSample;
+  const il = safeDim(inlineCount);
+  const xl = safeDim(crosslineCount);
+  const ts = safeDim(timeSamples);
+  const bps = Math.max(1, Math.min(8, Math.floor(bytesPerSample) || 4));
+  
+  const totalSamples = il * xl * ts;
+  if (!isFinite(totalSamples) || totalSamples <= 0) {
+    return 0;
+  }
+  
+  const totalBytes = totalSamples * bps;
   return totalBytes / (1024 * 1024);
 }
 
@@ -130,9 +145,9 @@ export function getScaledDimensions(
 ): { inlineCount: number; crosslineCount: number; timeSamples: number } {
   const scale = getResolutionScale(resolution);
   return {
-    inlineCount: Math.max(1, Math.floor(inlineCount / scale)),
-    crosslineCount: Math.max(1, Math.floor(crosslineCount / scale)),
-    timeSamples: Math.max(1, Math.floor(timeSamples / scale)),
+    inlineCount: Math.max(1, Math.floor(safeDim(inlineCount) / scale)),
+    crosslineCount: Math.max(1, Math.floor(safeDim(crosslineCount) / scale)),
+    timeSamples: Math.max(1, Math.floor(safeDim(timeSamples) / scale)),
   };
 }
 

@@ -1,11 +1,13 @@
-import { useRef, useEffect, useState, useCallback } from 'react';
+import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { useSeismicStore } from '../../store/seismicStore';
 import { useViewerStore } from '../../store/viewerStore';
 import { useInterpretationStore } from '../../store/interpretationStore';
-import { getColormapColor, applyBrightnessContrast } from '../../utils/colormap';
-import { Point3D, SliceType } from '../../../shared/types';
+import { getColormapColor, applyBrightnessContrast, applyGain, applyAGC, findPeak, findTrough, findZeroCrossing } from '../../utils/colormap';
+import { Point3D, SliceType, SeismicSliceData, DisplayMode } from '../../../shared/types';
 import { cn } from '../../lib/utils';
-import { X, Undo2, Check, SkipForward, SkipBack, Database } from 'lucide-react';
+import { X, Undo2, Check, SkipForward, SkipBack, Database, ZoomIn, ZoomOut, Maximize2, Activity, Layers, Target, Move, Camera } from 'lucide-react';
+import { exportCanvasAsPNG } from '../../utils/exportUtils';
+import { useToastStore } from '../../store/toastStore';
 
 interface SliceViewProps {
   type: 'inline' | 'crossline' | 'timeslice';
@@ -13,92 +15,263 @@ interface SliceViewProps {
 }
 
 interface MeasurePoint {
-  x: number;
-  y: number;
+  dataX: number;
+  dataY: number;
+  worldX: number;
+  worldY: number;
   value: number;
 }
 
 interface CursorInfo {
-  x: number;
-  y: number;
   dataX: number;
   dataY: number;
+  worldX: number;
+  worldY: number;
   value: number;
+  plotX: number;
+  plotY: number;
 }
+
+interface ViewTransform {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+const DISPLAY_MODES: { id: DisplayMode; label: string; icon: React.ReactNode }[] = [
+  { id: 'vd', label: '变密度', icon: <Layers className="w-3.5 h-3.5" /> },
+  { id: 'wiggle', label: '波形', icon: <Activity className="w-3.5 h-3.5" /> },
+  { id: 'va', label: '变面积', icon: <Activity className="w-3.5 h-3.5" /> },
+  { id: 'wiggle_va', label: '波形+变面积', icon: <Layers className="w-3.5 h-3.5" /> },
+];
 
 export default function SliceView({ type, className }: SliceViewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const colorbarCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const { getSlice, datasets, activeDatasetId } = useSeismicStore();
-  const { colormap, brightness, contrast, inlineIndex, crosslineIndex, timeIndex, setInlineIndex, setCrosslineIndex, setTimeIndex } = useViewerStore();
-  const { activeTool, horizons, faults, activeHorizonId, activeFaultId, addPickPoint, isPicking, currentPickPoints, startPicking, finishPicking, cancelPicking, removeLastPickPoint, autoTrackHorizon } = useInterpretationStore();
+  const { getSlice, datasets, activeDatasetId, dataProvider, isLoading } = useSeismicStore();
+  const {
+    colormap, brightness, contrast, displayMode, gain, agcWindow, wiggleOverlap, wigglePolarity,
+    pickMode, showCrosshair, showTraceSpacing, inlineIndex, crosslineIndex, timeIndex,
+    setInlineIndex, setCrosslineIndex, setTimeIndex, setCursorPosition, crosshairPosition, setCrosshairPosition, setSliceIndices,
+  } = useViewerStore();
+  const { activeTool, horizons, faults, activeHorizonId, addPickPoint, isPicking, currentPickPoints, startPicking, finishPicking, cancelPicking, removeLastPickPoint } = useInterpretationStore();
+  const { addToast } = useToastStore();
   
   const dataset = datasets.find((d) => d.id === activeDatasetId);
+  const dataLoaded = dataProvider?.isLoaded ?? false;
   
   const [cursorInfo, setCursorInfo] = useState<CursorInfo | null>(null);
+  const [sliceData, setSliceData] = useState<SeismicSliceData | null>(null);
+  const [processedData, setProcessedData] = useState<Float32Array | null>(null);
   const [measurePoints, setMeasurePoints] = useState<MeasurePoint[]>([]);
-  const [isMeasuring, setIsMeasuring] = useState(false);
+  const [viewTransform, setViewTransform] = useState<ViewTransform>({ scale: 1, offsetX: 0, offsetY: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [panStart, setPanStart] = useState<{ x: number; y: number; offsetX: number; offsetY: number } | null>(null);
+  const [jumpInputValue, setJumpInputValue] = useState('');
+  const [showJumpInput, setShowJumpInput] = useState(false);
+  const jumpInputRef = useRef<HTMLInputElement>(null);
   
   const index = type === 'inline' ? inlineIndex : type === 'crossline' ? crosslineIndex : timeIndex;
   const setIndex = type === 'inline' ? setInlineIndex : type === 'crossline' ? setCrosslineIndex : setTimeIndex;
   
-  const title = type === 'inline' ? 'Inline 剖面' : type === 'crossline' ? 'Crossline 剖面' : '时间切片';
+  const title = type === 'inline' ? 'Inline' : type === 'crossline' ? 'Crossline' : 'Time Slice';
   const axisLabel = type === 'inline' ? 'Inline' : type === 'crossline' ? 'Crossline' : 'Time';
+  const isProfile = type !== 'timeslice';
   
-  const PLOT_X = 40;
-  const PLOT_Y = 20;
+  const PLOT_MARGIN_LEFT = 55;
+  const PLOT_MARGIN_TOP = 28;
+  const PLOT_MARGIN_RIGHT = 48;
+  const PLOT_MARGIN_BOTTOM = 35;
+
+  const getSliceNumber = useCallback(() => {
+    if (!dataset) return index;
+    const timeStart = dataset.timeStart ?? 0;
+    if (type === 'inline') return dataset.inlineStart + index * dataset.inlineStep;
+    if (type === 'crossline') return dataset.crosslineStart + index * dataset.crosslineStep;
+    return timeStart + index * dataset.sampleInterval;
+  }, [dataset, type, index]);
+  
+  const sliceNumber = getSliceNumber();
+  const sliceUnit = type === 'timeslice' ? 'ms' : '';
+  
+  const maxIndex = useMemo(() => {
+    if (!dataset) return 0;
+    return type === 'inline' ? dataset.inlineCount - 1 : type === 'crossline' ? dataset.crosslineCount - 1 : dataset.timeSamples - 1;
+  }, [dataset, type]);
+
+  const timeStart = dataset?.timeStart ?? 0;
+  const inlineStart = dataset?.inlineStart ?? 0;
+  const crosslineStart = dataset?.crosslineStart ?? 0;
+  const inlineStep = dataset?.inlineStep ?? 1;
+  const crosslineStep = dataset?.crosslineStep ?? 1;
+  const sampleInterval = dataset?.sampleInterval ?? 4;
+
+  const getPlotDimensions = useCallback((rect: DOMRect) => {
+    const plotWidth = rect.width - PLOT_MARGIN_LEFT - PLOT_MARGIN_RIGHT;
+    const plotHeight = rect.height - PLOT_MARGIN_TOP - PLOT_MARGIN_BOTTOM;
+    const scaledWidth = plotWidth * viewTransform.scale;
+    const scaledHeight = plotHeight * viewTransform.scale;
+    const offsetX = PLOT_MARGIN_LEFT + viewTransform.offsetX + (plotWidth - scaledWidth) / 2;
+    const offsetY = PLOT_MARGIN_TOP + viewTransform.offsetY + (plotHeight - scaledHeight) / 2;
+    return { plotWidth, plotHeight, scaledWidth, scaledHeight, offsetX, offsetY };
+  }, [viewTransform]);
+
+  const zoomIn = useCallback(() => {
+    setViewTransform(prev => ({ ...prev, scale: Math.min(prev.scale * 1.25, 16) }));
+  }, []);
+
+  const zoomOut = useCallback(() => {
+    setViewTransform(prev => {
+      const newScale = Math.max(prev.scale / 1.25, 0.5);
+      if (newScale <= 1) return { scale: 1, offsetX: 0, offsetY: 0 };
+      return { ...prev, scale: newScale };
+    });
+  }, []);
+
+  const resetView = useCallback(() => {
+    setViewTransform({ scale: 1, offsetX: 0, offsetY: 0 });
+  }, []);
   
   const getDataCoordinates = useCallback((clientX: number, clientY: number) => {
-    const canvas = canvasRef.current;
     const container = containerRef.current;
-    if (!canvas || !container || !dataset) return null;
+    if (!container || !dataset || !sliceData || !processedData) return null;
     
     const rect = container.getBoundingClientRect();
-    const x = clientX - rect.left - PLOT_X;
-    const y = clientY - rect.top - PLOT_Y;
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
     
-    const displayWidth = rect.width - PLOT_X - 10;
-    const displayHeight = rect.height - PLOT_Y - 25;
+    const { scaledWidth, scaledHeight, offsetX, offsetY } = getPlotDimensions(rect);
+    const { width: dataWidth, height: dataHeight } = sliceData;
+    if (dataWidth === 0 || dataHeight === 0) return null;
     
-    if (x < 0 || x > displayWidth || y < 0 || y > displayHeight) return null;
+    const relX = x - offsetX;
+    const relY = y - offsetY;
     
-    const sliceData = getSlice(type, index);
-    const { width, height } = sliceData;
+    if (relX < 0 || relX > scaledWidth || relY < 0 || relY > scaledHeight) return null;
     
-    const dataX = Math.floor((x / displayWidth) * width);
-    const dataY = Math.floor((y / displayHeight) * height);
+    const dataX = Math.max(0, Math.min(dataWidth - 1, Math.floor((relX / scaledWidth) * dataWidth)));
+    const dataY = Math.max(0, Math.min(dataHeight - 1, Math.floor((relY / scaledHeight) * dataHeight)));
     
-    const dataIdx = dataY * width + dataX;
-    const value = sliceData.data[Math.min(dataIdx, sliceData.data.length - 1)];
+    const dataIdx = type === 'timeslice' ? dataY * dataWidth + dataX : dataX * dataHeight + dataY;
+    const safeIdx = Math.min(Math.max(0, dataIdx), processedData.length - 1);
+    const value = processedData[safeIdx];
     
     let worldX: number, worldY: number;
     if (type === 'timeslice') {
-      worldX = dataset.inlineStart + dataX * dataset.inlineStep;
-      worldY = dataset.crosslineStart + dataY * dataset.crosslineStep;
+      worldX = inlineStart + dataX * inlineStep;
+      worldY = crosslineStart + dataY * crosslineStep;
     } else if (type === 'inline') {
-      worldX = dataset.crosslineStart + dataX * dataset.crosslineStep;
-      worldY = dataY * dataset.sampleInterval;
+      worldX = crosslineStart + dataX * crosslineStep;
+      worldY = timeStart + dataY * sampleInterval;
     } else {
-      worldX = dataset.inlineStart + dataX * dataset.inlineStep;
-      worldY = dataY * dataset.sampleInterval;
+      worldX = inlineStart + dataX * inlineStep;
+      worldY = timeStart + dataY * sampleInterval;
     }
     
-    return {
-      x, y, dataX, dataY, value, worldX, worldY,
-      displayWidth, displayHeight,
-    };
-  }, [type, index, getSlice, dataset]);
+    return { dataX, dataY, value, worldX, worldY, plotX: relX, plotY: relY };
+  }, [type, dataset, sliceData, processedData, getPlotDimensions, inlineStart, crosslineStart, timeStart, inlineStep, crosslineStep, sampleInterval]);
+
+  useEffect(() => {
+    if (dataLoaded && dataset) {
+      const data = getSlice(type, index);
+      setSliceData(data);
+    } else {
+      setSliceData(null);
+      setProcessedData(null);
+    }
+  }, [type, index, getSlice, dataLoaded, dataset]);
+
+  useEffect(() => {
+    if (!sliceData || !sliceData.data) {
+      setProcessedData(null);
+      return;
+    }
+    
+    let data = sliceData.data;
+    const { width, height } = sliceData;
+    
+    data = applyGain(data, gain);
+    
+    if (agcWindow > 0 && displayMode !== 'vd') {
+      data = applyAGC(data, width, Math.min(agcWindow, height));
+    }
+    
+    setProcessedData(data);
+  }, [sliceData, gain, agcWindow, displayMode]);
+
+  useEffect(() => {
+    if (showJumpInput && jumpInputRef.current) {
+      jumpInputRef.current.focus();
+      jumpInputRef.current.select();
+    }
+  }, [showJumpInput]);
+
+  const handleJumpSubmit = useCallback(() => {
+    if (!dataset) return;
+    const val = parseInt(jumpInputValue);
+    if (isNaN(val)) {
+      setShowJumpInput(false);
+      return;
+    }
+    
+    if (type === 'inline') {
+      const idx = Math.round((val - inlineStart) / inlineStep);
+      setIndex(Math.max(0, Math.min(maxIndex, idx)));
+    } else if (type === 'crossline') {
+      const idx = Math.round((val - crosslineStart) / crosslineStep);
+      setIndex(Math.max(0, Math.min(maxIndex, idx)));
+    } else {
+      const idx = Math.round((val - timeStart) / sampleInterval);
+      setIndex(Math.max(0, Math.min(maxIndex, idx)));
+    }
+    setShowJumpInput(false);
+    setJumpInputValue('');
+  }, [dataset, type, jumpInputValue, inlineStart, crosslineStart, timeStart, inlineStep, crosslineStep, sampleInterval, maxIndex, setIndex]);
+
+  useEffect(() => {
+    if (!colorbarCanvasRef.current || !sliceData) return;
+    
+    const cbCanvas = colorbarCanvasRef.current;
+    const cbCtx = cbCanvas.getContext('2d');
+    if (!cbCtx) return;
+    
+    const dpr = window.devicePixelRatio || 1;
+    const rect = cbCanvas.getBoundingClientRect();
+    cbCanvas.width = rect.width * dpr;
+    cbCanvas.height = rect.height * dpr;
+    cbCtx.scale(dpr, dpr);
+    
+    const { minValue, maxValue } = sliceData;
+    const h = rect.height;
+    const w = rect.width;
+    
+    const gradient = cbCtx.createLinearGradient(0, 0, 0, h);
+    for (let i = 0; i <= 20; i++) {
+      const t = i / 20;
+      const val = minValue + t * (maxValue - minValue);
+      const [r, g, b] = getColormapColor(val, minValue, maxValue, colormap);
+      gradient.addColorStop(1 - t, `rgb(${Math.round(r*255)}, ${Math.round(g*255)}, ${Math.round(b*255)})`);
+    }
+    cbCtx.fillStyle = gradient;
+    cbCtx.fillRect(0, 0, w, h);
+    cbCtx.strokeStyle = '#475569';
+    cbCtx.lineWidth = 1;
+    cbCtx.strokeRect(0, 0, w, h);
+  }, [sliceData, colormap]);
   
   useEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
-    if (!canvas || !container) return;
+    if (!canvas || !container || !dataset || !dataLoaded || !sliceData || !processedData) return;
     
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     
-    const sliceData = getSlice(type, index);
-    const { data, width, height, minValue, maxValue } = sliceData;
+    const { width: dataWidth, height: dataHeight, minValue, maxValue } = sliceData;
+    
+    if (dataWidth === 0 || dataHeight === 0 || processedData.length === 0) return;
+    if (typeof minValue !== 'number' || typeof maxValue !== 'number') return;
     
     const rect = container.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
@@ -106,50 +279,183 @@ export default function SliceView({ type, className }: SliceViewProps) {
     canvas.height = rect.height * dpr;
     ctx.scale(dpr, dpr);
     
-    const displayWidth = rect.width - PLOT_X - 10;
-    const displayHeight = rect.height - PLOT_Y - 25;
+    ctx.fillStyle = '#0a0f1a';
+    ctx.fillRect(0, 0, rect.width, rect.height);
     
-    let imageData: Uint8ClampedArray;
+    const { plotWidth, plotHeight, scaledWidth, scaledHeight, offsetX, offsetY } = getPlotDimensions(rect);
     
-    if (type === 'timeslice') {
-      imageData = new Uint8ClampedArray(width * height * 4);
-      for (let i = 0; i < data.length; i++) {
-        const [r, g, b] = getColormapColor(data[i], minValue, maxValue, colormap);
-        imageData[i * 4] = Math.round(r * 255);
-        imageData[i * 4 + 1] = Math.round(g * 255);
-        imageData[i * 4 + 2] = Math.round(b * 255);
-        imageData[i * 4 + 3] = 255;
-      }
-    } else {
-      imageData = new Uint8ClampedArray(width * height * 4);
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const srcIdx = x * height + y;
-          const dstIdx = (y * width + x) * 4;
-          const [r, g, b] = getColormapColor(data[srcIdx], minValue, maxValue, colormap);
-          imageData[dstIdx] = Math.round(r * 255);
-          imageData[dstIdx + 1] = Math.round(g * 255);
-          imageData[dstIdx + 2] = Math.round(b * 255);
-          imageData[dstIdx + 3] = 255;
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(offsetX, offsetY, scaledWidth, scaledHeight);
+    
+    const sx = scaledWidth / dataWidth;
+    const sy = scaledHeight / dataHeight;
+    
+    const isProfile = type !== 'timeslice';
+    
+    if (!isProfile || displayMode === 'vd' || displayMode === 'wiggle_va') {
+      let imageData: Uint8ClampedArray;
+      
+      if (type === 'timeslice') {
+        imageData = new Uint8ClampedArray(dataWidth * dataHeight * 4);
+        for (let i = 0; i < processedData.length; i++) {
+          const [r, g, b] = getColormapColor(processedData[i], minValue * gain, maxValue * gain, colormap);
+          imageData[i * 4] = Math.round(r * 255);
+          imageData[i * 4 + 1] = Math.round(g * 255);
+          imageData[i * 4 + 2] = Math.round(b * 255);
+          imageData[i * 4 + 3] = 255;
+        }
+      } else {
+        imageData = new Uint8ClampedArray(dataWidth * dataHeight * 4);
+        for (let y = 0; y < dataHeight; y++) {
+          for (let x = 0; x < dataWidth; x++) {
+            const srcIdx = x * dataHeight + y;
+            const dstIdx = (y * dataWidth + x) * 4;
+            const [r, g, b] = getColormapColor(processedData[srcIdx], minValue * gain, maxValue * gain, colormap);
+            imageData[dstIdx] = Math.round(r * 255);
+            imageData[dstIdx + 1] = Math.round(g * 255);
+            imageData[dstIdx + 2] = Math.round(b * 255);
+            imageData[dstIdx + 3] = 255;
+          }
         }
       }
-    }
-    
-    if (brightness !== 0 || contrast !== 0) {
-      imageData = applyBrightnessContrast(imageData, brightness, contrast);
-    }
-    
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = width;
-    tempCanvas.height = height;
-    const tempCtx = tempCanvas.getContext('2d');
-    if (tempCtx) {
-      const imgData = new ImageData(imageData, width, height);
-      tempCtx.putImageData(imgData, 0, 0);
       
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(tempCanvas, PLOT_X, PLOT_Y, displayWidth, displayHeight);
+      if (brightness !== 0 || contrast !== 0) {
+        imageData = applyBrightnessContrast(imageData, brightness, contrast);
+      }
+      
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = dataWidth;
+      tempCanvas.height = dataHeight;
+      const tempCtx = tempCanvas.getContext('2d');
+      if (tempCtx) {
+        const imgData = new ImageData(imageData, dataWidth, dataHeight);
+        tempCtx.putImageData(imgData, 0, 0);
+        ctx.imageSmoothingEnabled = viewTransform.scale <= 2;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.globalAlpha = displayMode === 'wiggle_va' ? 0.5 : 1;
+        ctx.drawImage(tempCanvas, offsetX, offsetY, scaledWidth, scaledHeight);
+        ctx.globalAlpha = 1;
+      }
+    }
+    
+    if (isProfile && (displayMode === 'wiggle' || displayMode === 'va' || displayMode === 'wiggle_va')) {
+      const traceSpacing = scaledWidth / dataWidth;
+      const wiggleAmp = traceSpacing * (0.5 + wiggleOverlap) * 2;
+      const maxAbs = Math.max(Math.abs(minValue * gain), Math.abs(maxValue * gain));
+      
+      ctx.lineWidth = Math.max(0.5, 0.8);
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      
+      const traceStep = Math.max(1, Math.floor(1 / Math.max(sx, 0.5)));
+      
+      for (let x = 0; x < dataWidth; x += traceStep) {
+        const traceX = offsetX + x * sx;
+        
+        ctx.beginPath();
+        ctx.strokeStyle = wigglePolarity === 'negative' ? '#0066ff' : '#ff3333';
+        
+        let firstPoint = true;
+        let prevY = 0;
+        let prevVal = 0;
+        
+        for (let y = 0; y < dataHeight; y++) {
+          const idx = x * dataHeight + y;
+          const val = processedData[idx];
+          const normalizedVal = val / (maxAbs || 1);
+          const wiggleX = traceX + normalizedVal * wiggleAmp;
+          const plotY = offsetY + y * sy;
+          
+          if (firstPoint) {
+            ctx.moveTo(wiggleX, plotY);
+            firstPoint = false;
+          } else {
+            ctx.lineTo(wiggleX, plotY);
+          }
+          
+          prevY = plotY;
+          prevVal = normalizedVal;
+        }
+        ctx.stroke();
+        
+        if (displayMode === 'va' || displayMode === 'wiggle_va') {
+          const fillPositive = wigglePolarity === 'positive' || wigglePolarity === 'both';
+          const fillNegative = wigglePolarity === 'negative' || wigglePolarity === 'both';
+          
+          if (fillPositive || fillNegative) {
+            ctx.beginPath();
+            let started = false;
+            let startY = 0;
+            
+            for (let y = 0; y <= dataHeight; y++) {
+              const idx = x * dataHeight + Math.min(y, dataHeight - 1);
+              const val = y < dataHeight ? processedData[idx] : 0;
+              const normalizedVal = val / (maxAbs || 1);
+              const wiggleX = traceX + normalizedVal * wiggleAmp;
+              const plotY = offsetY + y * sy;
+              
+              if (fillPositive && normalizedVal > 0) {
+                if (!started) {
+                  ctx.moveTo(traceX, plotY);
+                  started = true;
+                  startY = plotY;
+                }
+                ctx.lineTo(wiggleX, plotY);
+              } else if (started && fillPositive) {
+                ctx.lineTo(traceX, plotY);
+                ctx.closePath();
+                ctx.fillStyle = 'rgba(220, 60, 60, 0.7)';
+                ctx.fill();
+                started = false;
+              }
+              
+              if (fillNegative && normalizedVal < 0) {
+                if (!started) {
+                  ctx.moveTo(traceX, plotY);
+                  started = true;
+                  startY = plotY;
+                }
+                ctx.lineTo(wiggleX, plotY);
+              } else if (started && fillNegative) {
+                ctx.lineTo(traceX, plotY);
+                ctx.closePath();
+                ctx.fillStyle = 'rgba(60, 100, 220, 0.7)';
+                ctx.fill();
+                started = false;
+              }
+            }
+            
+            if (started) {
+              ctx.lineTo(traceX, offsetY + scaledHeight);
+              ctx.closePath();
+              ctx.fill();
+            }
+          }
+        }
+      }
+      
+      if (showTraceSpacing) {
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(120, 180, 255, 0.35)';
+        ctx.lineWidth = 0.5;
+        const traceLineStep = Math.max(1, Math.floor(traceStep));
+        for (let x = 0; x < dataWidth; x += traceLineStep) {
+          const traceX = offsetX + x * sx;
+          ctx.moveTo(traceX, offsetY);
+          ctx.lineTo(traceX, offsetY + scaledHeight);
+        }
+        ctx.stroke();
+        
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(120, 180, 255, 0.2)';
+        ctx.lineWidth = 0.5;
+        ctx.setLineDash([2, 2]);
+        const baselineY = offsetY + scaledHeight / 2;
+        ctx.moveTo(offsetX, baselineY);
+        ctx.lineTo(offsetX + scaledWidth, baselineY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
     }
     
     horizons.filter(h => h.visible).forEach(horizon => {
@@ -160,57 +466,73 @@ export default function SliceView({ type, className }: SliceViewProps) {
       let started = false;
       const points = horizon.points.filter(p => {
         if (type === 'inline') {
-          const il = Math.round(p.x / dataset.inlineStep);
+          const il = Math.round((p.x - inlineStart) / inlineStep);
           return Math.abs(il - index) < 2;
         } else if (type === 'crossline') {
-          const xl = Math.round(p.y / dataset.crosslineStep);
+          const xl = Math.round((p.y - crosslineStart) / crosslineStep);
           return Math.abs(xl - index) < 2;
         } else {
-          const t = Math.round(p.z / dataset.sampleInterval);
+          const t = Math.round((p.z - timeStart) / sampleInterval);
           return Math.abs(t - index) < 2;
         }
       });
       
-      points.forEach((p, i) => {
+      points.forEach((p) => {
         let px: number, py: number;
         if (type === 'timeslice') {
-          px = PLOT_X + ((p.x - dataset.inlineStart) / (dataset.inlineCount * dataset.inlineStep)) * displayWidth;
-          py = PLOT_Y + ((p.y - dataset.crosslineStart) / (dataset.crosslineCount * dataset.crosslineStep)) * displayHeight;
+          const dx = Math.round((p.x - inlineStart) / inlineStep);
+          const dy = Math.round((p.y - crosslineStart) / crosslineStep);
+          px = offsetX + dx * sx;
+          py = offsetY + dy * sy;
         } else if (type === 'inline') {
-          px = PLOT_X + ((p.y - dataset.crosslineStart) / (dataset.crosslineCount * dataset.crosslineStep)) * displayWidth;
-          py = PLOT_Y + (p.z / (dataset.timeSamples * dataset.sampleInterval)) * displayHeight;
+          const dx = Math.round((p.y - crosslineStart) / crosslineStep);
+          const dy = Math.round((p.z - timeStart) / sampleInterval);
+          px = offsetX + dx * sx;
+          py = offsetY + dy * sy;
         } else {
-          px = PLOT_X + ((p.x - dataset.inlineStart) / (dataset.inlineCount * dataset.inlineStep)) * displayWidth;
-          py = PLOT_Y + (p.z / (dataset.timeSamples * dataset.sampleInterval)) * displayHeight;
+          const dx = Math.round((p.x - inlineStart) / inlineStep);
+          const dy = Math.round((p.z - timeStart) / sampleInterval);
+          px = offsetX + dx * sx;
+          py = offsetY + dy * sy;
         }
         
-        if (!started) {
-          ctx.moveTo(px, py);
-          started = true;
-        } else {
-          ctx.lineTo(px, py);
-        }
+        if (!started) { ctx.moveTo(px, py); started = true; }
+        else ctx.lineTo(px, py);
       });
-      
       ctx.stroke();
+      
+      ctx.fillStyle = horizon.color;
+      ctx.font = 'bold 9px sans-serif';
+      if (points.length > 0) {
+        const p = points[0];
+        let px: number, py: number;
+        if (type === 'inline') {
+          px = offsetX + Math.round((p.y - crosslineStart) / crosslineStep) * sx;
+          py = offsetY + Math.round((p.z - timeStart) / sampleInterval) * sy - 4;
+        } else if (type === 'crossline') {
+          px = offsetX + Math.round((p.x - inlineStart) / inlineStep) * sx;
+          py = offsetY + Math.round((p.z - timeStart) / sampleInterval) * sy - 4;
+        } else {
+          px = offsetX + Math.round((p.x - inlineStart) / inlineStep) * sx;
+          py = offsetY + Math.round((p.y - crosslineStart) / crosslineStep) * sy - 4;
+        }
+        ctx.fillText(horizon.name, px, py);
+      }
     });
     
     faults.filter(f => f.visible).forEach(fault => {
       ctx.strokeStyle = fault.color;
       ctx.lineWidth = 2;
-      ctx.setLineDash([5, 3]);
+      ctx.setLineDash([6, 3]);
       ctx.beginPath();
       
       const points = fault.vertices.filter(p => {
         if (type === 'inline') {
-          const il = Math.round(p.x / dataset.inlineStep);
-          return Math.abs(il - index) < 3;
+          return Math.abs(Math.round((p.x - inlineStart) / inlineStep) - index) < 3;
         } else if (type === 'crossline') {
-          const xl = Math.round(p.y / dataset.crosslineStep);
-          return Math.abs(xl - index) < 3;
+          return Math.abs(Math.round((p.y - crosslineStart) / crosslineStep) - index) < 3;
         } else {
-          const t = Math.round(p.z / dataset.sampleInterval);
-          return Math.abs(t - index) < 3;
+          return Math.abs(Math.round((p.z - timeStart) / sampleInterval) - index) < 3;
         }
       });
       
@@ -218,24 +540,18 @@ export default function SliceView({ type, className }: SliceViewProps) {
       points.forEach(p => {
         let px: number, py: number;
         if (type === 'timeslice') {
-          px = PLOT_X + ((p.x - dataset.inlineStart) / (dataset.inlineCount * dataset.inlineStep)) * displayWidth;
-          py = PLOT_Y + ((p.y - dataset.crosslineStart) / (dataset.crosslineCount * dataset.crosslineStep)) * displayHeight;
+          px = offsetX + Math.round((p.x - inlineStart) / inlineStep) * sx;
+          py = offsetY + Math.round((p.y - crosslineStart) / crosslineStep) * sy;
         } else if (type === 'inline') {
-          px = PLOT_X + ((p.y - dataset.crosslineStart) / (dataset.crosslineCount * dataset.crosslineStep)) * displayWidth;
-          py = PLOT_Y + (p.z / (dataset.timeSamples * dataset.sampleInterval)) * displayHeight;
+          px = offsetX + Math.round((p.y - crosslineStart) / crosslineStep) * sx;
+          py = offsetY + Math.round((p.z - timeStart) / sampleInterval) * sy;
         } else {
-          px = PLOT_X + ((p.x - dataset.inlineStart) / (dataset.inlineCount * dataset.inlineStep)) * displayWidth;
-          py = PLOT_Y + (p.z / (dataset.timeSamples * dataset.sampleInterval)) * displayHeight;
+          px = offsetX + Math.round((p.x - inlineStart) / inlineStep) * sx;
+          py = offsetY + Math.round((p.z - timeStart) / sampleInterval) * sy;
         }
-        
-        if (!started) {
-          ctx.moveTo(px, py);
-          started = true;
-        } else {
-          ctx.lineTo(px, py);
-        }
+        if (!started) { ctx.moveTo(px, py); started = true; }
+        else ctx.lineTo(px, py);
       });
-      
       ctx.stroke();
       ctx.setLineDash([]);
     });
@@ -243,7 +559,7 @@ export default function SliceView({ type, className }: SliceViewProps) {
     if (isPicking && currentPickPoints.length > 0) {
       const color = activeTool === 'horizon' 
         ? horizons.find(h => h.id === activeHorizonId)?.color || '#f59e0b'
-        : faults.find(f => f.id === useInterpretationStore.getState().activeFaultId)?.color || '#ef4444';
+        : '#ef4444';
       
       ctx.strokeStyle = color;
       ctx.lineWidth = 2;
@@ -252,16 +568,15 @@ export default function SliceView({ type, className }: SliceViewProps) {
       currentPickPoints.forEach((p, i) => {
         let px: number, py: number;
         if (type === 'timeslice') {
-          px = PLOT_X + ((p.x - dataset.inlineStart) / (dataset.inlineCount * dataset.inlineStep)) * displayWidth;
-          py = PLOT_Y + ((p.y - dataset.crosslineStart) / (dataset.crosslineCount * dataset.crosslineStep)) * displayHeight;
+          px = offsetX + Math.round((p.x - inlineStart) / inlineStep) * sx;
+          py = offsetY + Math.round((p.y - crosslineStart) / crosslineStep) * sy;
         } else if (type === 'inline') {
-          px = PLOT_X + ((p.y - dataset.crosslineStart) / (dataset.crosslineCount * dataset.crosslineStep)) * displayWidth;
-          py = PLOT_Y + (p.z / (dataset.timeSamples * dataset.sampleInterval)) * displayHeight;
+          px = offsetX + Math.round((p.y - crosslineStart) / crosslineStep) * sx;
+          py = offsetY + Math.round((p.z - timeStart) / sampleInterval) * sy;
         } else {
-          px = PLOT_X + ((p.x - dataset.inlineStart) / (dataset.inlineCount * dataset.inlineStep)) * displayWidth;
-          py = PLOT_Y + (p.z / (dataset.timeSamples * dataset.sampleInterval)) * displayHeight;
+          px = offsetX + Math.round((p.x - inlineStart) / inlineStep) * sx;
+          py = offsetY + Math.round((p.z - timeStart) / sampleInterval) * sy;
         }
-        
         if (i === 0) ctx.moveTo(px, py);
         else ctx.lineTo(px, py);
       });
@@ -270,16 +585,15 @@ export default function SliceView({ type, className }: SliceViewProps) {
       currentPickPoints.forEach(p => {
         let px: number, py: number;
         if (type === 'timeslice') {
-          px = PLOT_X + ((p.x - dataset.inlineStart) / (dataset.inlineCount * dataset.inlineStep)) * displayWidth;
-          py = PLOT_Y + ((p.y - dataset.crosslineStart) / (dataset.crosslineCount * dataset.crosslineStep)) * displayHeight;
+          px = offsetX + Math.round((p.x - inlineStart) / inlineStep) * sx;
+          py = offsetY + Math.round((p.y - crosslineStart) / crosslineStep) * sy;
         } else if (type === 'inline') {
-          px = PLOT_X + ((p.y - dataset.crosslineStart) / (dataset.crosslineCount * dataset.crosslineStep)) * displayWidth;
-          py = PLOT_Y + (p.z / (dataset.timeSamples * dataset.sampleInterval)) * displayHeight;
+          px = offsetX + Math.round((p.y - crosslineStart) / crosslineStep) * sx;
+          py = offsetY + Math.round((p.z - timeStart) / sampleInterval) * sy;
         } else {
-          px = PLOT_X + ((p.x - dataset.inlineStart) / (dataset.inlineCount * dataset.inlineStep)) * displayWidth;
-          py = PLOT_Y + (p.z / (dataset.timeSamples * dataset.sampleInterval)) * displayHeight;
+          px = offsetX + Math.round((p.x - inlineStart) / inlineStep) * sx;
+          py = offsetY + Math.round((p.z - timeStart) / sampleInterval) * sy;
         }
-        
         ctx.beginPath();
         ctx.arc(px, py, 4, 0, Math.PI * 2);
         ctx.fillStyle = color;
@@ -297,8 +611,8 @@ export default function SliceView({ type, className }: SliceViewProps) {
       ctx.beginPath();
       
       measurePoints.forEach((p, i) => {
-        const px = PLOT_X + p.x;
-        const py = PLOT_Y + p.y;
+        const px = offsetX + p.dataX * sx;
+        const py = offsetY + p.dataY * sy;
         if (i === 0) ctx.moveTo(px, py);
         else ctx.lineTo(px, py);
       });
@@ -306,8 +620,8 @@ export default function SliceView({ type, className }: SliceViewProps) {
       ctx.setLineDash([]);
       
       measurePoints.forEach(p => {
-        const px = PLOT_X + p.x;
-        const py = PLOT_Y + p.y;
+        const px = offsetX + p.dataX * sx;
+        const py = offsetY + p.dataY * sy;
         ctx.beginPath();
         ctx.arc(px, py, 5, 0, Math.PI * 2);
         ctx.fillStyle = '#22d3ee';
@@ -318,128 +632,346 @@ export default function SliceView({ type, className }: SliceViewProps) {
       });
       
       if (measurePoints.length >= 2) {
-        const last = measurePoints[measurePoints.length - 1];
-        const prev = measurePoints[measurePoints.length - 2];
-        let dist: string;
-        
-        if (type === 'timeslice') {
-          const dx = (last.x - prev.x) * dataset.inlineStep;
-          const dy = (last.y - prev.y) * dataset.crosslineStep;
-          dist = `${Math.sqrt(dx * dx + dy * dy).toFixed(1)} m`;
-        } else {
-          const dx = type === 'inline'
-            ? (last.x - prev.x) * dataset.crosslineStep
-            : (last.x - prev.x) * dataset.inlineStep;
-          const dy = (last.y - prev.y) * dataset.sampleInterval;
-          dist = `${Math.sqrt(dx * dx + dy * dy).toFixed(1)} ms`;
+        let totalDist = 0;
+        for (let i = 1; i < measurePoints.length; i++) {
+          const prev = measurePoints[i - 1];
+          const curr = measurePoints[i];
+          let dist: number;
+          if (type === 'timeslice') {
+            const dx = curr.worldX - prev.worldX;
+            const dy = curr.worldY - prev.worldY;
+            dist = Math.sqrt(dx * dx + dy * dy);
+          } else {
+            const dx = type === 'inline' ? curr.worldX - prev.worldX : curr.worldX - prev.worldX;
+            const dy = curr.worldY - prev.worldY;
+            dist = Math.sqrt(dx * dx + dy * dy);
+          }
+          totalDist += dist;
         }
         
-        const px = PLOT_X + (last.x + prev.x) / 2;
-        const py = PLOT_Y + (last.y + prev.y) / 2 - 8;
+        const last = measurePoints[measurePoints.length - 1];
+        const px = offsetX + last.dataX * sx;
+        const py = offsetY + last.dataY * sy - 12;
+        const distText = type === 'timeslice' ? `${totalDist.toFixed(1)} m` : `${totalDist.toFixed(1)} ms`;
         
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
         ctx.font = '10px monospace';
-        const textWidth = ctx.measureText(dist).width + 8;
-        ctx.fillRect(px - textWidth / 2, py - 8, textWidth, 14);
+        const tw = ctx.measureText(distText).width + 10;
+        ctx.fillRect(px - tw / 2, py - 10, tw, 16);
         ctx.fillStyle = '#22d3ee';
         ctx.textAlign = 'center';
-        ctx.fillText(dist, px, py + 2);
+        ctx.fillText(distText, px, py + 2);
         ctx.textAlign = 'left';
       }
     }
     
-    ctx.strokeStyle = '#475569';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(PLOT_X, PLOT_Y, displayWidth, displayHeight);
+    if (crosshairPosition && showCrosshair) {
+      let chX: number, chY: number;
+      const timeStartVal = timeStart;
+      
+      if (type === 'inline') {
+        const crossIl = crosshairPosition.x;
+        const crossXl = crosshairPosition.y;
+        const crossT = crosshairPosition.z;
+        if (Math.abs(Math.round((crossIl - inlineStart) / inlineStep) - index) > 2) {
+        } else {
+          chX = offsetX + Math.round((crossXl - crosslineStart) / crosslineStep) * sx;
+          chY = offsetY + Math.round((crossT - timeStartVal) / sampleInterval) * sy;
+        }
+      } else if (type === 'crossline') {
+        const crossIl = crosshairPosition.x;
+        const crossXl = crosshairPosition.y;
+        const crossT = crosshairPosition.z;
+        if (Math.abs(Math.round((crossXl - crosslineStart) / crosslineStep) - index) > 2) {
+        } else {
+          chX = offsetX + Math.round((crossIl - inlineStart) / inlineStep) * sx;
+          chY = offsetY + Math.round((crossT - timeStartVal) / sampleInterval) * sy;
+        }
+      } else {
+        const crossIl = crosshairPosition.x;
+        const crossXl = crosshairPosition.y;
+        chX = offsetX + Math.round((crossIl - inlineStart) / inlineStep) * sx;
+        chY = offsetY + Math.round((crossXl - crosslineStart) / crosslineStep) * sy;
+      }
+      
+      if (chX !== undefined && chY !== undefined &&
+          chX >= offsetX && chX <= offsetX + scaledWidth &&
+          chY >= offsetY && chY <= offsetY + scaledHeight) {
+        ctx.strokeStyle = 'rgba(0, 255, 255, 0.7)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        
+        ctx.beginPath();
+        ctx.moveTo(chX, offsetY);
+        ctx.lineTo(chX, offsetY + scaledHeight);
+        ctx.stroke();
+        
+        ctx.beginPath();
+        ctx.moveTo(offsetX, chY);
+        ctx.lineTo(offsetX + scaledWidth, chY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        
+        ctx.beginPath();
+        ctx.arc(chX, chY, 5, 0, Math.PI * 2);
+        ctx.strokeStyle = '#00ffff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+    }
     
-    ctx.fillStyle = '#94a3b8';
+    if (cursorInfo) {
+      const cx = offsetX + cursorInfo.dataX * sx;
+      const cy = offsetY + cursorInfo.dataY * sy;
+      
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+      ctx.lineWidth = 0.8;
+      ctx.setLineDash([2, 2]);
+      ctx.beginPath();
+      ctx.moveTo(cx, offsetY);
+      ctx.lineTo(cx, offsetY + scaledHeight);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(offsetX, cy);
+      ctx.lineTo(offsetX + scaledWidth, cy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    
+    ctx.strokeStyle = '#52607a';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(offsetX, offsetY, scaledWidth, scaledHeight);
+    
+    ctx.fillStyle = '#7a88a0';
     ctx.font = '10px monospace';
     ctx.textAlign = 'center';
     
+    const ticks = 6;
+    ctx.strokeStyle = '#3a4560';
+    ctx.lineWidth = 0.5;
+    
     if (type === 'timeslice') {
-      const ticks = 5;
       for (let i = 0; i <= ticks; i++) {
-        const x = PLOT_X + (displayWidth / ticks) * i;
-        const val = Math.round(dataset.inlineStart + (dataset.inlineCount - 1) * dataset.inlineStep * (i / ticks));
-        ctx.fillText(val.toString(), x, displayHeight + PLOT_Y + 15);
+        const t = i / ticks;
+        const x = offsetX + scaledWidth * t;
+        const val = Math.round(inlineStart + (sliceData.width - 1) * inlineStep * t);
         
-        const y = PLOT_Y + (displayHeight / ticks) * i;
-        const yVal = Math.round(dataset.crosslineStart + (dataset.crosslineCount - 1) * dataset.crosslineStep * (i / ticks));
+        ctx.beginPath();
+        ctx.moveTo(x, offsetY + scaledHeight);
+        ctx.lineTo(x, offsetY + scaledHeight + 4);
+        ctx.stroke();
+        ctx.fillText(val.toString(), x, offsetY + scaledHeight + 16);
+        
+        if (i > 0 && i < ticks) {
+          ctx.beginPath();
+          ctx.moveTo(x, offsetY);
+          ctx.lineTo(x, offsetY + scaledHeight);
+          ctx.strokeStyle = 'rgba(100,110,130,0.15)';
+          ctx.stroke();
+          ctx.strokeStyle = '#3a4560';
+        }
+        
+        const y = offsetY + scaledHeight * t;
+        const yVal = Math.round(crosslineStart + (sliceData.height - 1) * crosslineStep * t);
+        
+        ctx.beginPath();
+        ctx.moveTo(offsetX - 4, y);
+        ctx.lineTo(offsetX, y);
+        ctx.stroke();
+        
         ctx.save();
-        ctx.translate(PLOT_X - 5, y + 3);
+        ctx.translate(PLOT_MARGIN_LEFT - 8, y + 3);
         ctx.textAlign = 'right';
         ctx.fillText(yVal.toString(), 0, 0);
         ctx.restore();
+        
+        if (i > 0 && i < ticks) {
+          ctx.beginPath();
+          ctx.moveTo(offsetX, y);
+          ctx.lineTo(offsetX + scaledWidth, y);
+          ctx.strokeStyle = 'rgba(100,110,130,0.15)';
+          ctx.stroke();
+          ctx.strokeStyle = '#3a4560';
+        }
       }
+      
+      ctx.save();
+      ctx.fillStyle = '#8898b8';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Inline', offsetX + scaledWidth / 2, rect.height - 6);
+      ctx.translate(12, offsetY + scaledHeight / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText('Crossline', 0, 0);
+      ctx.restore();
     } else {
-      const ticks = 5;
+      const xStart = type === 'inline' ? crosslineStart : inlineStart;
+      const xEnd = type === 'inline' 
+        ? crosslineStart + (sliceData.width - 1) * crosslineStep
+        : inlineStart + (sliceData.width - 1) * inlineStep;
+      
       for (let i = 0; i <= ticks; i++) {
-        const x = PLOT_X + (displayWidth / ticks) * i;
-        const startVal = type === 'inline' ? dataset.crosslineStart : dataset.inlineStart;
-        const endVal = type === 'inline' 
-          ? dataset.crosslineStart + (dataset.crosslineCount - 1) * dataset.crosslineStep
-          : dataset.inlineStart + (dataset.inlineCount - 1) * dataset.inlineStep;
-        const val = Math.round(startVal + (endVal - startVal) * (i / ticks));
-        ctx.fillText(val.toString(), x, displayHeight + PLOT_Y + 15);
+        const t = i / ticks;
+        const x = offsetX + scaledWidth * t;
+        const val = Math.round(xStart + (xEnd - xStart) * t);
+        
+        ctx.beginPath();
+        ctx.moveTo(x, offsetY + scaledHeight);
+        ctx.lineTo(x, offsetY + scaledHeight + 4);
+        ctx.stroke();
+        ctx.fillText(val.toString(), x, offsetY + scaledHeight + 16);
+        
+        if (i > 0 && i < ticks) {
+          ctx.beginPath();
+          ctx.moveTo(x, offsetY);
+          ctx.lineTo(x, offsetY + scaledHeight);
+          ctx.strokeStyle = 'rgba(100,110,130,0.15)';
+          ctx.stroke();
+          ctx.strokeStyle = '#3a4560';
+        }
       }
       
       for (let i = 0; i <= ticks; i++) {
-        const y = PLOT_Y + (displayHeight / ticks) * i;
-        const timeVal = Math.round(dataset.timeStart + (dataset.timeSamples - 1) * dataset.sampleInterval * (i / ticks));
+        const t = i / ticks;
+        const y = offsetY + scaledHeight * t;
+        const timeVal = Math.round(timeStart + (sliceData.height - 1) * sampleInterval * t);
+        
+        ctx.beginPath();
+        ctx.moveTo(offsetX - 4, y);
+        ctx.lineTo(offsetX, y);
+        ctx.stroke();
+        
         ctx.save();
-        ctx.translate(PLOT_X - 5, y + 3);
+        ctx.translate(PLOT_MARGIN_LEFT - 8, y + 3);
         ctx.textAlign = 'right';
-        ctx.fillText(timeVal + 'ms', 0, 0);
+        ctx.fillText(timeVal + '', 0, 0);
         ctx.restore();
+        
+        if (i > 0 && i < ticks) {
+          ctx.beginPath();
+          ctx.moveTo(offsetX, y);
+          ctx.lineTo(offsetX + scaledWidth, y);
+          ctx.strokeStyle = 'rgba(100,110,130,0.15)';
+          ctx.stroke();
+          ctx.strokeStyle = '#3a4560';
+        }
       }
+      
+      ctx.save();
+      ctx.fillStyle = '#8898b8';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(type === 'inline' ? 'Crossline' : 'Inline', offsetX + scaledWidth / 2, rect.height - 6);
+      ctx.translate(12, offsetY + scaledHeight / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText('Time (ms)', 0, 0);
+      ctx.restore();
     }
     
     ctx.textAlign = 'left';
     
-  }, [type, index, colormap, brightness, contrast, getSlice, horizons, faults, activeHorizonId, isPicking, currentPickPoints, activeTool, measurePoints, dataset]);
+    if (viewTransform.scale > 1) {
+      ctx.fillStyle = '#22d3ee';
+      ctx.font = '10px monospace';
+      ctx.fillText(`${(viewTransform.scale * 100).toFixed(0)}%`, offsetX + 5, offsetY + 14);
+    }
+    
+  }, [type, index, colormap, brightness, contrast, getSlice, horizons, faults, activeHorizonId, isPicking, currentPickPoints, activeTool, measurePoints, dataset, dataLoaded, sliceData, processedData, viewTransform, displayMode, gain, agcWindow, wiggleOverlap, wigglePolarity, crosshairPosition, showCrosshair, cursorInfo, getPlotDimensions, inlineStart, crosslineStart, timeStart, inlineStep, crosslineStep, sampleInterval]);
   
   const handleMouseMove = (e: React.MouseEvent) => {
+    if (isPanning && panStart) {
+      setViewTransform(prev => ({
+        ...prev,
+        offsetX: panStart.offsetX + (e.clientX - panStart.x),
+        offsetY: panStart.offsetY + (e.clientY - panStart.y),
+      }));
+      return;
+    }
+    
     const coords = getDataCoordinates(e.clientX, e.clientY);
-    if (coords) {
+    if (coords && dataset) {
       setCursorInfo({
-        x: coords.x,
-        y: coords.y,
         dataX: coords.dataX,
         dataY: coords.dataY,
+        worldX: coords.worldX,
+        worldY: coords.worldY,
         value: coords.value,
-      } as CursorInfo);
+        plotX: coords.plotX,
+        plotY: coords.plotY,
+      });
+      
+      let cursorInline: number, cursorCrossline: number, cursorTime: number;
+      
+      if (type === 'inline') {
+        cursorInline = inlineStart + index * inlineStep;
+        cursorCrossline = coords.worldX;
+        cursorTime = coords.worldY;
+      } else if (type === 'crossline') {
+        cursorInline = coords.worldX;
+        cursorCrossline = crosslineStart + index * crosslineStep;
+        cursorTime = coords.worldY;
+      } else {
+        cursorInline = coords.worldX;
+        cursorCrossline = coords.worldY;
+        cursorTime = timeStart + index * sampleInterval;
+      }
+      
+      const pos = { x: cursorInline, y: cursorCrossline, z: cursorTime };
+      setCursorPosition({ inline: cursorInline, crossline: cursorCrossline, time: cursorTime, value: coords.value });
+      setCrosshairPosition(pos);
     } else {
       setCursorInfo(null);
     }
   };
   
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button === 1 || (e.button === 0 && activeTool === 'pan')) {
+      e.preventDefault();
+      setIsPanning(true);
+      setPanStart({ x: e.clientX, y: e.clientY, offsetX: viewTransform.offsetX, offsetY: viewTransform.offsetY });
+    }
+  };
+  
+  const handleMouseUp = () => {
+    setIsPanning(false);
+    setPanStart(null);
+  };
+  
   const handleClick = (e: React.MouseEvent) => {
+    if (isPanning) return;
+    
     const coords = getDataCoordinates(e.clientX, e.clientY);
-    if (!coords) return;
+    if (!coords || !sliceData || !processedData) return;
     
     if (activeTool === 'horizon' || activeTool === 'fault') {
-      if (!isPicking) {
-        startPicking();
+      if (!isPicking) startPicking();
+      
+      let dataY = coords.dataY;
+      const { width, height } = sliceData;
+      
+      if (pickMode === 'peak' && isProfile) {
+        dataY = findPeak(processedData, width, height, coords.dataX, coords.dataY, 5);
+      } else if (pickMode === 'trough' && isProfile) {
+        dataY = findTrough(processedData, width, height, coords.dataX, coords.dataY, 5);
+      } else if (pickMode === 'zero_crossing' && isProfile) {
+        dataY = findZeroCrossing(processedData, width, height, coords.dataX, coords.dataY, 'up');
       }
       
       let point: Point3D;
+      
       if (type === 'timeslice') {
-        point = {
-          x: coords.worldX!,
-          y: coords.worldY!,
-          z: index * dataset.sampleInterval,
-        };
+        point = { x: coords.worldX, y: coords.worldY, z: timeStart + index * sampleInterval };
       } else if (type === 'inline') {
         point = {
-          x: index * dataset.inlineStep + dataset.inlineStart,
-          y: coords.worldX!,
-          z: coords.worldY!,
+          x: inlineStart + index * inlineStep,
+          y: coords.worldX,
+          z: timeStart + dataY * sampleInterval,
         };
       } else {
         point = {
-          x: coords.worldX!,
-          y: index * dataset.crosslineStep + dataset.crosslineStart,
-          z: coords.worldY!,
+          x: coords.worldX,
+          y: crosslineStart + index * crosslineStep,
+          z: timeStart + dataY * sampleInterval,
         };
       }
       
@@ -447,7 +979,13 @@ export default function SliceView({ type, className }: SliceViewProps) {
     }
     
     if (activeTool === 'measure') {
-      setMeasurePoints(prev => [...prev, { x: coords.x, y: coords.y, value: coords.value }]);
+      setMeasurePoints(prev => [...prev, {
+        dataX: coords.dataX,
+        dataY: coords.dataY,
+        worldX: coords.worldX,
+        worldY: coords.worldY,
+        value: coords.value,
+      }]);
     }
   };
   
@@ -459,27 +997,29 @@ export default function SliceView({ type, className }: SliceViewProps) {
   
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
-    if ((activeTool === 'horizon' || activeTool === 'fault') && isPicking) {
-      cancelPicking();
-    }
-    if (activeTool === 'measure') {
-      setMeasurePoints([]);
-      setIsMeasuring(false);
-    }
+    if ((activeTool === 'horizon' || activeTool === 'fault') && isPicking) cancelPicking();
+    if (activeTool === 'measure') setMeasurePoints([]);
   };
-  
-  const handleWheel = (e: React.WheelEvent) => {
+
+  const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
-    const delta = e.deltaY > 0 ? 1 : -1;
-    const maxIdx = type === 'inline' 
-      ? dataset.inlineCount - 1 
-      : type === 'crossline' 
-        ? dataset.crosslineCount - 1 
-        : dataset.timeSamples - 1;
-    setIndex(Math.max(0, Math.min(maxIdx, index + delta)));
-  };
+    
+    if (e.ctrlKey || e.metaKey || activeTool === 'zoom') {
+      const delta = e.deltaY > 0 ? 0.85 : 1.18;
+      setViewTransform(prev => {
+        const newScale = Math.max(0.5, Math.min(16, prev.scale * delta));
+        if (newScale <= 1) return { scale: 1, offsetX: 0, offsetY: 0 };
+        return { ...prev, scale: newScale };
+      });
+    } else {
+      if (!dataset) return;
+      const delta = e.deltaY > 0 ? 1 : -1;
+      setIndex(Math.max(0, Math.min(maxIndex, index + delta)));
+    }
+  }, [dataset, activeTool, index, setIndex, maxIndex]);
   
   const getCursorStyle = () => {
+    if (isPanning) return 'grabbing';
     if (activeTool === 'horizon' || activeTool === 'fault') return 'crosshair';
     if (activeTool === 'measure') return 'crosshair';
     if (activeTool === 'zoom') return 'zoom-in';
@@ -492,49 +1032,44 @@ export default function SliceView({ type, className }: SliceViewProps) {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
       if ((activeTool === 'horizon' || activeTool === 'fault') && isPicking) {
-        if (e.key === 'Backspace' || e.key === 'Delete') {
-          e.preventDefault();
-          removeLastPickPoint();
-        }
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          finishPicking();
-        }
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          cancelPicking();
-        }
+        if (e.key === 'Backspace' || e.key === 'Delete') { e.preventDefault(); removeLastPickPoint(); }
+        if (e.key === 'Enter') { e.preventDefault(); finishPicking(); }
+        if (e.key === 'Escape') { e.preventDefault(); cancelPicking(); }
       }
 
       if (activeTool === 'measure') {
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          setMeasurePoints([]);
-          setIsMeasuring(false);
-        }
-        if (e.key === 'Backspace' || e.key === 'Delete') {
-          e.preventDefault();
-          setMeasurePoints(prev => prev.slice(0, -1));
-        }
+        if (e.key === 'Escape') { e.preventDefault(); setMeasurePoints([]); }
+        if (e.key === 'Backspace' || e.key === 'Delete') { e.preventDefault(); setMeasurePoints(prev => prev.slice(0, -1)); }
+      }
+      
+      if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomIn(); }
+      if (e.key === '-') { e.preventDefault(); zoomOut(); }
+      if (e.key === '0') { e.preventDefault(); resetView(); }
+      
+      if (e.key === 'g' || e.key === 'G') {
+        if (!showJumpInput) { setShowJumpInput(true); }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeTool, isPicking, removeLastPickPoint, finishPicking, cancelPicking]);
+  }, [activeTool, isPicking, removeLastPickPoint, finishPicking, cancelPicking, zoomIn, zoomOut, resetView, showJumpInput]);
 
-  const handleAutoTrack = (direction: 'forward' | 'backward') => {
-    if (activeTool === 'horizon' && activeHorizonId) {
-      autoTrackHorizon(activeHorizonId, type as SliceType, index, direction, 10);
-    }
-  };
-  
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, [handleWheel]);
+
   return (
     <div 
       ref={containerRef} 
-      className={cn('relative bg-[#0f172a] overflow-hidden', className || '')}
-      onWheel={handleWheel}
+      className={cn('relative bg-[#0a0f1a] overflow-hidden select-none', className || '')}
       onMouseMove={handleMouseMove}
+      onMouseDown={handleMouseDown}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
       onContextMenu={handleContextMenu}
@@ -547,127 +1082,264 @@ export default function SliceView({ type, className }: SliceViewProps) {
           </div>
           <p className="text-xs text-slate-400">未选择数据集</p>
         </div>
+      ) : !dataLoaded || isLoading ? (
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <div className="w-10 h-10 mb-3 rounded-full border-2 border-slate-600 border-t-cyan-400 animate-spin" />
+          <p className="text-xs text-slate-400">{isLoading ? '加载数据中...' : '初始化数据...'}</p>
+        </div>
       ) : (
         <>
           <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
       
-      <div className="absolute top-2 left-2 flex items-center gap-2 px-2 py-1 bg-slate-900/80 rounded text-[11px] text-slate-300 z-10">
-        <div className={cn('w-2 h-2 rounded-full',
-          type === 'inline' ? 'bg-blue-500' : type === 'crossline' ? 'bg-green-500' : 'bg-amber-500'
-        )} />
-        {title}
-        <span className="text-slate-500">|</span>
-        <span className="font-mono text-slate-400">
-          {axisLabel}: {index}
-        </span>
-      </div>
-      
-      <div className="absolute top-2 right-2 flex items-center gap-1 z-10">
-        {activeTool === 'measure' && measurePoints.length > 0 && (
-          <>
-            <div className="px-2 py-1 bg-cyan-500/20 border border-cyan-500/50 rounded text-[10px] text-cyan-300">
-              测量: {measurePoints.length - 1} 段
+          <div className="absolute top-2 left-2 flex items-center gap-2 z-10">
+            <div className="flex items-center gap-2 px-2 py-1 bg-slate-900/90 rounded text-[11px] text-slate-300 backdrop-blur-sm border border-slate-700/50">
+              <div className={cn('w-2 h-2 rounded-full',
+                type === 'inline' ? 'bg-blue-500' : type === 'crossline' ? 'bg-green-500' : 'bg-amber-500'
+              )} />
+              <span className="font-semibold">{title}</span>
+              {showJumpInput ? (
+                <input
+                  ref={jumpInputRef}
+                  type="number"
+                  value={jumpInputValue}
+                  onChange={(e) => setJumpInputValue(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleJumpSubmit(); if (e.key === 'Escape') { setShowJumpInput(false); setJumpInputValue(''); } }}
+                  onBlur={handleJumpSubmit}
+                  className="w-16 px-1 py-0.5 bg-slate-800 border border-cyan-500/50 rounded text-cyan-300 text-[11px] font-mono outline-none"
+                  placeholder={Math.round(sliceNumber).toString()}
+                />
+              ) : (
+                <span
+                  className="font-mono text-slate-200 font-semibold cursor-pointer hover:text-cyan-400 transition-colors px-1 rounded"
+                  onClick={() => setShowJumpInput(true)}
+                  title="点击跳转道号 (G)"
+                >
+                  {Math.round(sliceNumber)}{sliceUnit}
+                </span>
+              )}
             </div>
-            <button
-              className="p-1 bg-slate-900/80 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-              onClick={(e) => { e.stopPropagation(); setMeasurePoints(prev => prev.slice(0, -1)); }}
-              title="撤销测量点 (Backspace)"
-            >
-              <Undo2 className="w-3.5 h-3.5" />
-            </button>
-            <button
-              className="p-1 bg-slate-900/80 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-              onClick={(e) => { e.stopPropagation(); setMeasurePoints([]); }}
-              title="清除测量 (Esc)"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </>
-        )}
-        {(activeTool === 'horizon' || activeTool === 'fault') && isPicking && (
-          <>
-            <div className="px-2 py-1 bg-amber-500/20 border border-amber-500/50 rounded text-[10px] text-amber-300">
-              拾取中: {currentPickPoints.length} 点
+            
+            <div className="flex items-center gap-0.5">
+              {DISPLAY_MODES.map(mode => (
+                <button
+                  key={mode.id}
+                  className={cn(
+                    'p-1.5 rounded transition-colors text-[10px] flex items-center gap-1',
+                    displayMode === mode.id
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-slate-900/90 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                  )}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    useViewerStore.getState().setDisplayMode(mode.id);
+                  }}
+                  title={mode.label}
+                >
+                  {mode.icon}
+                  <span className="hidden lg:inline">{mode.label}</span>
+                </button>
+              ))}
             </div>
+          </div>
+          
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 flex items-center gap-1 z-10">
             <button
-              className="p-1 bg-slate-900/80 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-              onClick={(e) => { e.stopPropagation(); removeLastPickPoint(); }}
-              title="撤销上一点 (Backspace)"
-            >
-              <Undo2 className="w-3.5 h-3.5" />
-            </button>
-            <button
-              className="p-1 bg-slate-900/80 rounded text-green-400 hover:text-green-300 hover:bg-slate-800 transition-colors"
-              onClick={(e) => { e.stopPropagation(); finishPicking(); }}
-              title="完成拾取 (Enter)"
-            >
-              <Check className="w-3.5 h-3.5" />
-            </button>
-            <button
-              className="p-1 bg-slate-900/80 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-              onClick={(e) => { e.stopPropagation(); cancelPicking(); }}
-              title="取消拾取 (Esc)"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </>
-        )}
-        {activeTool === 'horizon' && !isPicking && activeHorizonId && (
-          <>
-            <button
-              className="p-1 bg-slate-900/80 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-              onClick={(e) => { e.stopPropagation(); handleAutoTrack('backward'); }}
-              title="向回追踪 10 道"
+              className="p-1.5 bg-slate-900/90 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors backdrop-blur-sm"
+              onClick={(e) => { e.stopPropagation(); setIndex(Math.max(0, index - 10)); }}
+              title="后退10"
             >
               <SkipBack className="w-3.5 h-3.5" />
             </button>
             <button
-              className="p-1 bg-slate-900/80 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-              onClick={(e) => { e.stopPropagation(); handleAutoTrack('forward'); }}
-              title="向前追踪 10 道"
+              className="p-1.5 bg-slate-900/90 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors backdrop-blur-sm"
+              onClick={(e) => { e.stopPropagation(); setIndex(Math.max(0, index - 1)); }}
+              title="上一个"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+            <div className="px-3 py-1 bg-slate-900/90 rounded text-[10px] text-slate-400 font-mono min-w-[80px] text-center backdrop-blur-sm">
+              {index + 1} / {maxIndex + 1}
+            </div>
+            <button
+              className="p-1.5 bg-slate-900/90 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors backdrop-blur-sm"
+              onClick={(e) => { e.stopPropagation(); setIndex(Math.min(maxIndex, index + 1)); }}
+              title="下一个"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+            <button
+              className="p-1.5 bg-slate-900/90 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors backdrop-blur-sm"
+              onClick={(e) => { e.stopPropagation(); setIndex(Math.min(maxIndex, index + 10)); }}
+              title="前进10"
             >
               <SkipForward className="w-3.5 h-3.5" />
             </button>
-          </>
-        )}
-      </div>
-      
-      {cursorInfo && (
-        <div className="absolute bottom-2 left-2 px-2 py-1.5 bg-slate-900/90 rounded text-[10px] text-slate-300 z-10 font-mono space-y-0.5 min-w-[140px]">
-          <div className="flex justify-between gap-3">
-            <span className="text-slate-500">
-              {type === 'timeslice' ? 'Inline:' : type === 'inline' ? 'Crossline:' : 'Inline:'}
-            </span>
-            <span className="text-cyan-400">
-              {type === 'timeslice' ? cursorInfo.dataX : cursorInfo.dataX}
-            </span>
           </div>
-          <div className="flex justify-between gap-3">
-            <span className="text-slate-500">
-              {type === 'timeslice' ? 'Crossline:' : 'Time:'}
-            </span>
-            <span className="text-green-400">
-              {type === 'timeslice' ? cursorInfo.dataY : cursorInfo.dataY}
-            </span>
+          
+          <div className="absolute top-2 right-2 flex items-center gap-1 z-10">
+            <button
+              className="p-1.5 bg-slate-900/90 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors backdrop-blur-sm"
+              onClick={(e) => { e.stopPropagation(); zoomOut(); }}
+              title="缩小 (-)"
+            >
+              <ZoomOut className="w-3.5 h-3.5" />
+            </button>
+            <button
+              className="p-1.5 bg-slate-900/90 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors backdrop-blur-sm"
+              onClick={(e) => { e.stopPropagation(); zoomIn(); }}
+              title="放大 (+)"
+            >
+              <ZoomIn className="w-3.5 h-3.5" />
+            </button>
+            <button
+              className="p-1.5 bg-slate-900/90 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors backdrop-blur-sm"
+              onClick={(e) => { e.stopPropagation(); resetView(); }}
+              title="重置 (0)"
+            >
+              <Maximize2 className="w-3.5 h-3.5" />
+            </button>
+            {dataLoaded && (
+              <button
+                className="p-1.5 bg-slate-900/90 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors backdrop-blur-sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  try {
+                    if (canvasRef.current) {
+                      const sliceNum = type === 'inline'
+                        ? Math.round(inlineStart + index * inlineStep)
+                        : type === 'crossline'
+                        ? Math.round(crosslineStart + index * crosslineStep)
+                        : Math.round(timeStart + index * sampleInterval);
+                      const timestamp = new Date().toISOString().slice(0, 10);
+                      exportCanvasAsPNG(canvasRef.current, `${type}_${sliceNum}_${timestamp}.png`);
+                      addToast(`已保存 ${title} ${sliceNum} 截图`, 'success');
+                    }
+                  } catch (err) {
+                    addToast('截图失败：' + (err as Error).message, 'error');
+                  }
+                }}
+                title="截图保存"
+              >
+                <Camera className="w-3.5 h-3.5" />
+              </button>
+            )}
+            
+            {(activeTool === 'horizon' || activeTool === 'fault') && (
+              <div className="flex items-center gap-0.5 ml-1 px-1 py-0.5 bg-slate-900/90 rounded backdrop-blur-sm">
+                <span className="text-[9px] text-slate-500 mr-1">拾取:</span>
+                {(['manual', 'peak', 'trough', 'zero_crossing'] as const).map(pm => (
+                  <button
+                    key={pm}
+                    className={cn(
+                      'px-1.5 py-0.5 rounded text-[9px] transition-colors',
+                      pickMode === pm ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'
+                    )}
+                    onClick={(e) => { e.stopPropagation(); useViewerStore.getState().setPickMode(pm); }}
+                    title={
+                      pm === 'manual' ? '手动拾取' :
+                      pm === 'peak' ? '波峰' :
+                      pm === 'trough' ? '波谷' : '零交叉点'
+                    }
+                  >
+                    {pm === 'manual' ? '手' : pm === 'peak' ? '峰' : pm === 'trough' ? '谷' : '零'}
+                  </button>
+                ))}
+              </div>
+            )}
+            
+            {activeTool === 'measure' && measurePoints.length > 0 && (
+              <>
+                <div className="w-px h-4 bg-slate-700 mx-1" />
+                <button
+                  className="p-1.5 bg-slate-900/90 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors backdrop-blur-sm"
+                  onClick={(e) => { e.stopPropagation(); setMeasurePoints(prev => prev.slice(0, -1)); }}
+                  title="撤销"
+                >
+                  <Undo2 className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  className="p-1.5 bg-slate-900/90 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors backdrop-blur-sm"
+                  onClick={(e) => { e.stopPropagation(); setMeasurePoints([]); }}
+                  title="清除"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </>
+            )}
+            
+            {(activeTool === 'horizon' || activeTool === 'fault') && isPicking && (
+              <>
+                <div className="w-px h-4 bg-slate-700 mx-1" />
+                <button
+                  className="p-1.5 bg-slate-900/90 rounded text-green-400 hover:bg-slate-800 transition-colors backdrop-blur-sm"
+                  onClick={(e) => { e.stopPropagation(); finishPicking(); }}
+                  title="完成 (Enter)"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  className="p-1.5 bg-slate-900/90 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors backdrop-blur-sm"
+                  onClick={(e) => { e.stopPropagation(); cancelPicking(); }}
+                  title="取消 (Esc)"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </>
+            )}
           </div>
-          <div className="flex justify-between gap-3 border-t border-slate-700 pt-0.5">
-            <span className="text-slate-500">值:</span>
-            <span className="text-amber-400">{cursorInfo.value.toFixed(4)}</span>
+          
+          {dataLoaded && sliceData && (
+            <div className="absolute right-2 top-14 bottom-14 w-8 flex flex-col z-10">
+              <div className="text-[9px] text-slate-500 text-center mb-1 font-mono">
+                {(sliceData.maxValue * gain).toFixed(1)}
+              </div>
+              <canvas
+                ref={colorbarCanvasRef}
+                className="w-full flex-1 rounded"
+                style={{ minHeight: '80px' }}
+              />
+              <div className="text-[9px] text-slate-500 text-center mt-1 font-mono">
+                {(sliceData.minValue * gain).toFixed(1)}
+              </div>
+            </div>
+          )}
+          
+          {cursorInfo && (
+            <div className="absolute bottom-2 left-2 px-3 py-2 bg-slate-900/95 rounded text-[10px] text-slate-300 z-10 font-mono space-y-0.5 min-w-[170px] backdrop-blur-sm border border-slate-700/50">
+              <div className="flex justify-between gap-4">
+                <span className="text-slate-500">
+                  {type === 'timeslice' ? 'Inline:' : type === 'inline' ? 'Crossline:' : 'Inline:'}
+                </span>
+                <span className="text-cyan-400">{Math.round(cursorInfo.worldX)}</span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-slate-500">
+                  {type === 'timeslice' ? 'Crossline:' : 'Time:'}
+                </span>
+                <span className="text-green-400">
+                  {type === 'timeslice' ? Math.round(cursorInfo.worldY) : cursorInfo.worldY.toFixed(1) + 'ms'}
+                </span>
+              </div>
+              <div className="flex justify-between gap-4 pt-0.5 border-t border-slate-700">
+                <span className="text-slate-500">振幅:</span>
+                <span className="text-amber-400">{cursorInfo.value.toFixed(4)}</span>
+              </div>
+            </div>
+          )}
+          
+          <div className="absolute bottom-2 right-2 px-2 py-1 bg-slate-900/80 rounded text-[9px] text-slate-500 z-10 backdrop-blur-sm">
+            滚轮切片 | Ctrl+滚轮缩放 | 中键平移 | G 跳转道号
           </div>
-        </div>
-      )}
-      
-      <div className="absolute bottom-2 right-2 px-2 py-1 bg-slate-900/80 rounded text-[10px] text-slate-400 z-10">
-        滚轮切换切片
-      </div>
-      
-      {(activeTool === 'horizon' || activeTool === 'fault') && (
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none opacity-0 hover:opacity-100 transition-opacity z-10">
-          <div className="px-3 py-2 bg-slate-900/90 rounded text-[10px] text-slate-400">
-            单击拾取点，双击完成，右键取消
-          </div>
-        </div>
-      )}
+          
+          {(activeTool === 'horizon' || activeTool === 'fault') && !isPicking && (
+            <div className="absolute bottom-12 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-slate-900/95 rounded text-[10px] text-slate-400 z-10 backdrop-blur-sm border border-amber-500/20">
+              单击拾取 | 双击/Enter完成 | 右键/Esc取消 | 拾取模式: {pickMode === 'manual' ? '手动' : pickMode === 'peak' ? '波峰' : pickMode === 'trough' ? '波谷' : '零交叉'}
+            </div>
+          )}
         </>
       )}
     </div>

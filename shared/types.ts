@@ -18,6 +18,9 @@ export interface SeismicDataset {
   crosslineStep: number;
   source: 'mock' | 'segy' | 'api';
   createdAt: Date;
+  minValue?: number;
+  maxValue?: number;
+  remoteId?: string;
 }
 
 export interface Horizon {
@@ -56,7 +59,13 @@ export type SliceType = 'inline' | 'crossline' | 'timeslice';
 
 export type ToolType = 'select' | 'horizon' | 'fault' | 'zoom' | 'pan' | 'rotate' | 'measure';
 
-export type ColormapType = 'seismic' | 'gray' | 'rainbow' | 'hot' | 'cool' | 'viridis' | 'plasma';
+export type ColormapType = 'seismic' | 'gray' | 'rainbow' | 'hot' | 'cool' | 'viridis' | 'plasma' | 'black_red' | 'red_white_blue';
+
+export type DisplayMode = 'vd' | 'wiggle' | 'va' | 'wiggle_va';
+
+export type PickMode = 'manual' | 'peak' | 'trough' | 'zero_crossing' | 'auto_track';
+
+export type WigglePolarity = 'positive' | 'negative' | 'both';
 
 export interface ViewerState {
   viewMode: ViewerMode;
@@ -67,6 +76,15 @@ export interface ViewerState {
   opacity: number;
   brightness: number;
   contrast: number;
+  displayMode: DisplayMode;
+  gain: number;
+  agcWindow: number;
+  wiggleOverlap: number;
+  wigglePolarity: WigglePolarity;
+  pickMode: PickMode;
+  showCrosshair: boolean;
+  showTraceSpacing: boolean;
+  crosshairPosition: Point3D | null;
 }
 
 export interface SeismicSliceData {

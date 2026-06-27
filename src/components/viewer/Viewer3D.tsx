@@ -1,6 +1,6 @@
 import { useRef, useMemo, useEffect, Component, type ReactNode, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { OrbitControls, Grid, GizmoHelper, GizmoViewport } from '@react-three/drei';
+import { OrbitControls, Grid, GizmoHelper, GizmoViewport, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { useViewerStore } from '../../store/viewerStore';
 import { useSeismicStore } from '../../store/seismicStore';
@@ -11,8 +11,9 @@ import { Layers, Box, Grid3X3, Play, Pause, RotateCcw, Eye, EyeOff, Database } f
 import { cn } from '../../lib/utils';
 
 function useActiveDataset() {
-  const { datasets, activeDatasetId } = useSeismicStore();
-  return datasets.find((d) => d.id === activeDatasetId) || null;
+  const { datasets, activeDatasetId, dataProvider } = useSeismicStore();
+  const dataset = datasets.find((d) => d.id === activeDatasetId) || null;
+  return { dataset, dataLoaded: dataProvider?.isLoaded ?? false };
 }
 
 function createSliceTexture(
@@ -22,14 +23,27 @@ function createSliceTexture(
   colormap: ColormapType,
   minVal: number,
   maxVal: number
-): THREE.DataTexture {
+): THREE.DataTexture | null {
+  if (width <= 0 || height <= 0 || sliceData.length === 0) return null;
+  if (typeof minVal !== 'number' || typeof maxVal !== 'number') return null;
+  if (!isFinite(minVal) || !isFinite(maxVal)) return null;
+  
   const colormapData = createColormapTexture(colormap, 256);
   const imageData = new Uint8Array(width * height * 4);
   
+  const range = maxVal - minVal;
+  const midColorIdx = 128 * 4;
+  
   for (let i = 0; i < sliceData.length; i++) {
     const val = sliceData[i];
-    const normalized = Math.max(0, Math.min(1, (val - minVal) / (maxVal - minVal)));
-    const colorIdx = Math.floor(normalized * 255) * 4;
+    let colorIdx: number;
+    
+    if (range === 0 || !isFinite(val) || isNaN(val)) {
+      colorIdx = midColorIdx;
+    } else {
+      const normalized = Math.max(0, Math.min(1, (val - minVal) / range));
+      colorIdx = Math.floor(normalized * 255) * 4;
+    }
     
     imageData[i * 4] = colormapData[colorIdx];
     imageData[i * 4 + 1] = colormapData[colorIdx + 1];
@@ -55,9 +69,9 @@ function InlineSlice() {
   const meshRef = useRef<THREE.Mesh>(null);
   const { inlineIndex, colormap, opacity, sliceVisibility } = useViewerStore();
   const { getSlice } = useSeismicStore();
-  const dataset = useActiveDataset();
+  const { dataset, dataLoaded } = useActiveDataset();
   
-  const sliceData = useMemo(() => dataset ? getSlice('inline', inlineIndex) : null, [inlineIndex, getSlice, dataset]);
+  const sliceData = useMemo(() => (dataset && dataLoaded) ? getSlice('inline', inlineIndex) : null, [inlineIndex, getSlice, dataset, dataLoaded]);
   
   const texture = useMemo(() => {
     if (!sliceData) return null;
@@ -94,7 +108,7 @@ function InlineSlice() {
   const height = timeSamples * sampleInterval;
   
   return (
-    <mesh ref={meshRef} position={[x, width / 2, height / 2]} rotation={[0, Math.PI / 2, 0]}>
+    <mesh ref={meshRef} position={[x, height / 2, width / 2]} rotation={[0, Math.PI / 2, 0]}>
       <planeGeometry args={[width, height]} />
       <meshBasicMaterial side={THREE.DoubleSide} transparent opacity={opacity} map={texture} />
     </mesh>
@@ -105,9 +119,9 @@ function CrosslineSlice() {
   const meshRef = useRef<THREE.Mesh>(null);
   const { crosslineIndex, colormap, opacity, sliceVisibility } = useViewerStore();
   const { getSlice } = useSeismicStore();
-  const dataset = useActiveDataset();
+  const { dataset, dataLoaded } = useActiveDataset();
   
-  const sliceData = useMemo(() => dataset ? getSlice('crossline', crosslineIndex) : null, [crosslineIndex, getSlice, dataset]);
+  const sliceData = useMemo(() => (dataset && dataLoaded) ? getSlice('crossline', crosslineIndex) : null, [crosslineIndex, getSlice, dataset, dataLoaded]);
   
   const texture = useMemo(() => {
     if (!sliceData) return null;
@@ -139,12 +153,12 @@ function CrosslineSlice() {
   const crosslineStep = dataset.crosslineStep;
   const sampleInterval = dataset.sampleInterval;
   
-  const y = crosslineIndex * crosslineStep;
+  const z = crosslineIndex * crosslineStep;
   const width = inlineCount * inlineStep;
   const height = timeSamples * sampleInterval;
   
   return (
-    <mesh ref={meshRef} position={[width / 2, y, height / 2]}>
+    <mesh ref={meshRef} position={[width / 2, height / 2, z]}>
       <planeGeometry args={[width, height]} />
       <meshBasicMaterial side={THREE.DoubleSide} transparent opacity={opacity} map={texture} />
     </mesh>
@@ -155,9 +169,9 @@ function TimeSlice() {
   const meshRef = useRef<THREE.Mesh>(null);
   const { timeIndex, colormap, opacity, sliceVisibility } = useViewerStore();
   const { getSlice } = useSeismicStore();
-  const dataset = useActiveDataset();
+  const { dataset, dataLoaded } = useActiveDataset();
   
-  const sliceData = useMemo(() => dataset ? getSlice('timeslice', timeIndex) : null, [timeIndex, getSlice, dataset]);
+  const sliceData = useMemo(() => (dataset && dataLoaded) ? getSlice('timeslice', timeIndex) : null, [timeIndex, getSlice, dataset, dataLoaded]);
   
   const texture = useMemo(() => {
     if (!sliceData) return null;
@@ -189,12 +203,12 @@ function TimeSlice() {
   const crosslineStep = dataset.crosslineStep;
   const sampleInterval = dataset.sampleInterval;
   
-  const z = timeIndex * sampleInterval;
+  const y = timeIndex * sampleInterval;
   const width = inlineCount * inlineStep;
   const depth = crosslineCount * crosslineStep;
   
   return (
-    <mesh ref={meshRef} position={[width / 2, depth / 2, z]} rotation={[-Math.PI / 2, 0, 0]}>
+    <mesh ref={meshRef} position={[width / 2, y, depth / 2]} rotation={[-Math.PI / 2, 0, 0]}>
       <planeGeometry args={[width, depth]} />
       <meshBasicMaterial side={THREE.DoubleSide} transparent opacity={opacity} map={texture} />
     </mesh>
@@ -203,13 +217,13 @@ function TimeSlice() {
 
 function VolumeBox() {
   const { sliceVisibility } = useViewerStore();
-  const dataset = useActiveDataset();
+  const { dataset } = useActiveDataset();
   
   if (!dataset || !sliceVisibility.volumeBox) return null;
   
   const width = dataset.inlineCount * dataset.inlineStep;
-  const height = dataset.crosslineCount * dataset.crosslineStep;
-  const depth = dataset.timeSamples * dataset.sampleInterval;
+  const depth = dataset.crosslineCount * dataset.crosslineStep;
+  const height = dataset.timeSamples * dataset.sampleInterval;
   
   return (
     <mesh position={[width / 2, height / 2, depth / 2]}>
@@ -219,8 +233,9 @@ function VolumeBox() {
   );
 }
 
-function AxesLabels() {
-  const dataset = useActiveDataset();
+function SliceBorders() {
+  const { inlineIndex, crosslineIndex, timeIndex, sliceVisibility } = useViewerStore();
+  const { dataset } = useActiveDataset();
   
   if (!dataset) return null;
   
@@ -231,27 +246,78 @@ function AxesLabels() {
   const crosslineStep = dataset.crosslineStep;
   const sampleInterval = dataset.sampleInterval;
   
+  const volumeWidth = inlineCount * inlineStep;
+  const volumeDepth = crosslineCount * crosslineStep;
+  const volumeHeight = timeSamples * sampleInterval;
+  
   return (
     <group>
-      <mesh position={[inlineCount * inlineStep + 50, 0, 0]}>
-        <sphereGeometry args={[20, 16, 16]} />
-        <meshBasicMaterial color="#ef4444" />
-      </mesh>
-      <mesh position={[0, crosslineCount * crosslineStep + 50, 0]}>
-        <sphereGeometry args={[20, 16, 16]} />
-        <meshBasicMaterial color="#22c55e" />
-      </mesh>
-      <mesh position={[0, 0, timeSamples * sampleInterval + 50]}>
-        <sphereGeometry args={[20, 16, 16]} />
-        <meshBasicMaterial color="#3b82f6" />
-      </mesh>
+      {sliceVisibility.inline && (
+        <lineSegments position={[inlineIndex * inlineStep, volumeHeight / 2, volumeDepth / 2]} rotation={[0, Math.PI / 2, 0]}>
+          <edgesGeometry args={[new THREE.PlaneGeometry(volumeDepth, volumeHeight)]} />
+          <lineBasicMaterial color="#3b82f6" linewidth={2} transparent opacity={0.8} />
+        </lineSegments>
+      )}
+      {sliceVisibility.crossline && (
+        <lineSegments position={[volumeWidth / 2, volumeHeight / 2, crosslineIndex * crosslineStep]}>
+          <edgesGeometry args={[new THREE.PlaneGeometry(volumeWidth, volumeHeight)]} />
+          <lineBasicMaterial color="#22c55e" linewidth={2} transparent opacity={0.8} />
+        </lineSegments>
+      )}
+      {sliceVisibility.timeslice && (
+        <lineSegments position={[volumeWidth / 2, timeIndex * sampleInterval, volumeDepth / 2]} rotation={[-Math.PI / 2, 0, 0]}>
+          <edgesGeometry args={[new THREE.PlaneGeometry(volumeWidth, volumeDepth)]} />
+          <lineBasicMaterial color="#f59e0b" linewidth={2} transparent opacity={0.8} />
+        </lineSegments>
+      )}
+    </group>
+  );
+}
+
+function AxesLabels() {
+  const { dataset } = useActiveDataset();
+  
+  if (!dataset) return null;
+  
+  const inlineCount = dataset.inlineCount;
+  const crosslineCount = dataset.crosslineCount;
+  const timeSamples = dataset.timeSamples;
+  const inlineStep = dataset.inlineStep;
+  const crosslineStep = dataset.crosslineStep;
+  const sampleInterval = dataset.sampleInterval;
+  
+  const endX = inlineCount * inlineStep;
+  const endY = timeSamples * sampleInterval;
+  const endZ = crosslineCount * crosslineStep;
+  
+  return (
+    <group>
+      <arrowHelper args={[new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 0), endX + 100, 0xef4444, 50, 30]} />
+      <arrowHelper args={[new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0), endY + 100, 0x3b82f6, 50, 30]} />
+      <arrowHelper args={[new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, 0), endZ + 100, 0x22c55e, 50, 30]} />
+      
+      <Html position={[endX + 150, 0, 0]} center>
+        <div className="text-red-400 text-xs font-bold bg-slate-900/80 px-1.5 py-0.5 rounded whitespace-nowrap">
+          Inline
+        </div>
+      </Html>
+      <Html position={[0, endY + 150, 0]} center>
+        <div className="text-blue-400 text-xs font-bold bg-slate-900/80 px-1.5 py-0.5 rounded whitespace-nowrap">
+          Time (ms)
+        </div>
+      </Html>
+      <Html position={[0, 0, endZ + 150]} center>
+        <div className="text-green-400 text-xs font-bold bg-slate-900/80 px-1.5 py-0.5 rounded whitespace-nowrap">
+          Crossline
+        </div>
+      </Html>
     </group>
   );
 }
 
 function Horizons() {
   const { horizons } = useInterpretationStore();
-  const dataset = useActiveDataset();
+  const { dataset } = useActiveDataset();
   
   if (!dataset) return null;
   
@@ -261,8 +327,8 @@ function Horizons() {
         const positions = new Float32Array(horizon.points.length * 3);
         horizon.points.forEach((p, i) => {
           positions[i * 3] = p.x;
-          positions[i * 3 + 1] = p.y;
-          positions[i * 3 + 2] = p.z;
+          positions[i * 3 + 1] = p.z;
+          positions[i * 3 + 2] = p.y;
         });
         
         return (
@@ -285,7 +351,7 @@ function Horizons() {
 
 function Faults() {
   const { faults } = useInterpretationStore();
-  const dataset = useActiveDataset();
+  const { dataset } = useActiveDataset();
   
   if (!dataset) return null;
   
@@ -295,8 +361,8 @@ function Faults() {
         const positions = new Float32Array(fault.vertices.length * 3);
         fault.vertices.forEach((p, i) => {
           positions[i * 3] = p.x;
-          positions[i * 3 + 1] = p.y;
-          positions[i * 3 + 2] = p.z;
+          positions[i * 3 + 1] = p.z;
+          positions[i * 3 + 2] = p.y;
         });
         
         return (
@@ -318,9 +384,9 @@ function Faults() {
 }
 
 function CameraController() {
-  const { camera } = useThree();
-  const { cameraPreset } = useViewerStore();
-  const dataset = useActiveDataset();
+  const { camera, gl } = useThree();
+  const { cameraPreset, projection } = useViewerStore();
+  const { dataset } = useActiveDataset();
   const controlsRef = useRef<any>(null);
   
   useEffect(() => {
@@ -334,28 +400,28 @@ function CameraController() {
     const sampleInterval = dataset.sampleInterval;
     
     const centerX = (inlineCount * inlineStep) / 2;
-    const centerY = (crosslineCount * crosslineStep) / 2;
-    const centerZ = (timeSamples * sampleInterval) / 2;
+    const centerY = (timeSamples * sampleInterval) / 2;
+    const centerZ = (crosslineCount * crosslineStep) / 2;
     const maxDim = Math.max(inlineCount * inlineStep, crosslineCount * crosslineStep, timeSamples * sampleInterval);
     
     let targetPos: [number, number, number];
     
     switch (cameraPreset) {
       case 'front':
-        targetPos = [centerX, centerY - maxDim * 1.2, centerZ];
+        targetPos = [centerX, centerY, centerZ - maxDim * 1.2];
         break;
       case 'top':
-        targetPos = [centerX, centerY, centerZ + maxDim * 1.2];
+        targetPos = [centerX, centerY + maxDim * 1.2, centerZ];
         break;
       case 'side':
         targetPos = [centerX + maxDim * 1.2, centerY, centerZ];
         break;
       case 'iso':
-        targetPos = [centerX + maxDim * 0.8, centerY - maxDim * 0.8, centerZ + maxDim * 0.8];
+        targetPos = [centerX + maxDim * 0.8, centerY + maxDim * 0.6, centerZ - maxDim * 0.8];
         break;
       case 'perspective':
       default:
-        targetPos = [centerX + maxDim * 0.8, centerY - maxDim * 0.8, centerZ + maxDim * 0.6];
+        targetPos = [centerX + maxDim * 0.8, centerY + maxDim * 0.5, centerZ - maxDim * 0.8];
         break;
     }
     
@@ -363,6 +429,31 @@ function CameraController() {
     const endPos = new THREE.Vector3(...targetPos);
     const duration = 500;
     const startTime = performance.now();
+    
+    if (projection === 'orthographic' && camera instanceof THREE.PerspectiveCamera) {
+      const aspect = gl.domElement.clientWidth / gl.domElement.clientHeight;
+      const frustumSize = maxDim * 1.5;
+      const newCamera = new THREE.OrthographicCamera(
+        (frustumSize * aspect) / -2,
+        (frustumSize * aspect) / 2,
+        frustumSize / 2,
+        frustumSize / -2,
+        0.1,
+        maxDim * 10
+      );
+      newCamera.position.copy(camera.position);
+      newCamera.lookAt(centerX, centerY, centerZ);
+      newCamera.up.copy(camera.up);
+      camera.copy(newCamera as any);
+      camera.updateProjectionMatrix();
+    } else if (projection === 'perspective' && camera instanceof THREE.OrthographicCamera) {
+      const newCamera = new THREE.PerspectiveCamera(50, gl.domElement.clientWidth / gl.domElement.clientHeight, 0.1, maxDim * 10);
+      newCamera.position.copy(camera.position);
+      newCamera.lookAt(centerX, centerY, centerZ);
+      newCamera.up.copy(camera.up);
+      camera.copy(newCamera as any);
+      camera.updateProjectionMatrix();
+    }
     
     const animate = () => {
       const elapsed = performance.now() - startTime;
@@ -378,14 +469,14 @@ function CameraController() {
     };
     
     animate();
-  }, [cameraPreset, camera, dataset]);
+  }, [cameraPreset, projection, camera, dataset, gl]);
   
   return null;
 }
 
 function AnimationController() {
   const { isAnimating, animationSpeed, animationDirection, animationSlice, setInlineIndex, setCrosslineIndex, setTimeIndex, inlineIndex, crosslineIndex, timeIndex } = useViewerStore();
-  const dataset = useActiveDataset();
+  const { dataset } = useActiveDataset();
   const lastTimeRef = useRef(0);
   
   useFrame((state) => {
@@ -423,7 +514,7 @@ function AnimationController() {
 
 function Scene() {
   const { sliceVisibility } = useViewerStore();
-  const dataset = useActiveDataset();
+  const { dataset } = useActiveDataset();
   
   if (!dataset) return null;
   
@@ -441,13 +532,14 @@ function Scene() {
       <InlineSlice />
       <CrosslineSlice />
       <TimeSlice />
+      <SliceBorders />
       
       <Horizons />
       <Faults />
       
       {sliceVisibility.grid && (
         <Grid
-          position={[inlineCount * inlineStep / 2, crosslineCount * crosslineStep / 2, 0]}
+          position={[inlineCount * inlineStep / 2, 0, crosslineCount * crosslineStep / 2]}
           args={[
             inlineCount * inlineStep,
             crosslineCount * crosslineStep,
@@ -703,7 +795,7 @@ function Viewer3DToolbar() {
 }
 
 function Viewer3DContent({ className }: Viewer3DProps) {
-  const dataset = useActiveDataset();
+  const { dataset, dataLoaded } = useActiveDataset();
   
   if (!dataset) {
     return (
@@ -719,6 +811,24 @@ function Viewer3DContent({ className }: Viewer3DProps) {
         </div>
         <div className="absolute top-2 left-2 flex items-center gap-2 px-2 py-1 bg-slate-900/80 rounded text-[11px] text-slate-400">
           <div className="w-2 h-2 rounded-full bg-slate-600" />
+          3D 视图
+        </div>
+      </div>
+    );
+  }
+  
+  if (!dataLoaded) {
+    return (
+      <div className={`relative bg-[#0a0a0f] flex flex-col items-center justify-center ${className || ''}`}>
+        <div className="text-center">
+          <div className="w-12 h-12 mx-auto mb-4 rounded-full border-2 border-slate-600 border-t-cyan-400 animate-spin" />
+          <h3 className="text-slate-300 text-sm font-medium mb-1">加载数据中...</h3>
+          <p className="text-slate-500 text-xs max-w-xs">
+            正在加载地震数据，请稍候
+          </p>
+        </div>
+        <div className="absolute top-2 left-2 flex items-center gap-2 px-2 py-1 bg-slate-900/80 rounded text-[11px] text-slate-400">
+          <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
           3D 视图
         </div>
       </div>

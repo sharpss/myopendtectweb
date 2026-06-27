@@ -8,15 +8,21 @@ import {
 import { estimateDatasetSizeMB, getResolutionScale, getScaledDimensions } from '../../utils/dataStrategy';
 import { downsampleVolume } from '../../utils/resample';
 import { getMockSeismicData } from '../mockSeismic';
+import { LRUCache } from '../../utils/lruCache';
 
 export class FullVolumeDataProvider extends BaseDataProvider {
   private data: Float32Array | null = null;
   private minValue: number = 0;
   private maxValue: number = 0;
+  private sliceCache: LRUCache<string, SeismicSliceData>;
 
   constructor(dataset: SeismicDataset) {
     super(dataset);
     this._stats.strategy = 'full';
+    this.sliceCache = new LRUCache<string, SeismicSliceData>({
+      maxSize: 64 * 1024 * 1024,
+      sizeFn: (slice) => slice.data.length * 4,
+    });
   }
 
   async load(options: DataLoadOptions = {}): Promise<void> {
@@ -49,13 +55,46 @@ export class FullVolumeDataProvider extends BaseDataProvider {
         currentStage: `加载数据体 (${scaledDims.inlineCount} × ${scaledDims.crosslineCount} × ${scaledDims.timeSamples})...`,
       });
 
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      let rawData: Float32Array;
+      let minVal: number;
+      let maxVal: number;
 
-      const rawData = getMockSeismicData();
+      if (this._dataset.source === 'segy' || this._dataset.source === 'api') {
+        const remoteId = this._dataset.remoteId || this._dataset.id;
+        const response = await fetch(`/api/segy/datasets/${remoteId}/volume`);
+        if (!response.ok) {
+          throw new Error('Failed to load volume data from server');
+        }
+        const result = await response.json();
+        
+        this.emitProgress({
+          total: 100,
+          loaded: 60,
+          currentStage: '处理数据...',
+        });
+        
+        rawData = new Float32Array(result.data.data);
+        minVal = result.data.minValue;
+        maxVal = result.data.maxValue;
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        rawData = getMockSeismicData();
+        minVal = this._dataset.minValue ?? Infinity;
+        maxVal = this._dataset.maxValue ?? -Infinity;
+        
+        if (!isFinite(minVal) || !isFinite(maxVal)) {
+          const step = Math.max(1, Math.floor(rawData.length / 10000));
+          for (let i = 0; i < rawData.length; i += step) {
+            const val = rawData[i];
+            if (val < minVal) minVal = val;
+            if (val > maxVal) maxVal = val;
+          }
+        }
+      }
 
       this.emitProgress({
         total: 100,
-        loaded: 50,
+        loaded: 70,
         currentStage: '处理数据...',
       });
 
@@ -71,14 +110,6 @@ export class FullVolumeDataProvider extends BaseDataProvider {
         this.data = rawData;
       }
 
-      let minVal = Infinity;
-      let maxVal = -Infinity;
-      const step = Math.max(1, Math.floor(this.data.length / 10000));
-      for (let i = 0; i < this.data.length; i += step) {
-        const val = this.data[i];
-        if (val < minVal) minVal = val;
-        if (val > maxVal) maxVal = val;
-      }
       this.minValue = minVal;
       this.maxValue = maxVal;
 
@@ -97,18 +128,32 @@ export class FullVolumeDataProvider extends BaseDataProvider {
 
   unload(): void {
     this.data = null;
+    this.sliceCache.clear();
     this._isLoaded = false;
     this._stats.loadedSizeMB = 0;
   }
 
   getSlice(type: SliceType, index: number): SeismicSliceData {
     if (!this.data) {
-      throw new Error('Data not loaded');
+      return {
+        data: new Float32Array(0),
+        width: 0,
+        height: 0,
+        minValue: 0,
+        maxValue: 0,
+      };
     }
 
-    const { inlineCount, crosslineCount, timeSamples, timeStart, sampleInterval } = this._dataset;
     const resolution = this._stats.resolutionLevel;
     const scale = getResolutionScale(resolution);
+    const cacheKey = `${type}_${Math.floor(index / scale)}_${resolution}`;
+    
+    const cached = this.sliceCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const { inlineCount, crosslineCount, timeSamples } = this._dataset;
     const scaled = getScaledDimensions(inlineCount, crosslineCount, timeSamples, resolution);
 
     let width: number;
@@ -129,7 +174,7 @@ export class FullVolumeDataProvider extends BaseDataProvider {
         for (let xl = 0; xl < scaled.crosslineCount; xl++) {
           for (let t = 0; t < scaled.timeSamples; t++) {
             const volIdx = (il * scaled.crosslineCount + xl) * scaled.timeSamples + t;
-            const sliceIdx = xl * height + t;
+            const sliceIdx = t * width + xl;
             const val = this.data[volIdx];
             sliceData[sliceIdx] = val;
             if (val < minVal) minVal = val;
@@ -147,7 +192,7 @@ export class FullVolumeDataProvider extends BaseDataProvider {
         for (let il = 0; il < scaled.inlineCount; il++) {
           for (let t = 0; t < scaled.timeSamples; t++) {
             const volIdx = (il * scaled.crosslineCount + xl) * scaled.timeSamples + t;
-            const sliceIdx = il * height + t;
+            const sliceIdx = t * width + il;
             const val = this.data[volIdx];
             sliceData[sliceIdx] = val;
             if (val < minVal) minVal = val;
@@ -176,13 +221,19 @@ export class FullVolumeDataProvider extends BaseDataProvider {
       }
     }
 
-    return {
+    if (!isFinite(minVal)) minVal = this.minValue;
+    if (!isFinite(maxVal)) maxVal = this.maxValue;
+
+    const result = {
       data: sliceData,
       width,
       height,
       minValue: minVal,
       maxValue: maxVal,
     };
+
+    this.sliceCache.set(cacheKey, result);
+    return result;
   }
 
   getValue(inline: number, crossline: number, time: number): number {
