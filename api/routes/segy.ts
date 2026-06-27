@@ -385,18 +385,16 @@ function analyzeSegyFile(
       // IBM浮点大端序优先
       if (be && dfc === 1) score += 10;
 
-      // 用EBCDIC头范围验证
+      // 用EBCDIC头范围验证（只验证最小值，采样道数有限可能无法覆盖完整范围）
       if (ebcdicInlineRange && ila.length > 0) {
         const minIl = ila[0];
-        const maxIl = ila[ila.length - 1];
-        if (minIl === ebcdicInlineRange[0] && maxIl === ebcdicInlineRange[1]) score += 50;
-        else if (minIl >= ebcdicInlineRange[0] - 5 && maxIl <= ebcdicInlineRange[1] + 5) score += 20;
+        if (minIl === ebcdicInlineRange[0]) score += 50;
+        else if (minIl >= ebcdicInlineRange[0] - 5 && minIl <= ebcdicInlineRange[0] + 5) score += 25;
       }
       if (ebcdicCrosslineRange && cla.length > 0) {
         const minXl = cla[0];
-        const maxXl = cla[cla.length - 1];
-        if (minXl === ebcdicCrosslineRange[0] && maxXl === ebcdicCrosslineRange[1]) score += 50;
-        else if (minXl >= ebcdicCrosslineRange[0] - 5 && maxXl <= ebcdicCrosslineRange[1] + 5) score += 20;
+        if (minXl === ebcdicCrosslineRange[0]) score += 50;
+        else if (minXl >= ebcdicCrosslineRange[0] - 5 && minXl <= ebcdicCrosslineRange[0] + 5) score += 25;
       }
     }
 

@@ -349,23 +349,21 @@ export default function SegyImportModal({
 
           if (inlineArr.length > 20 && crosslineArr.length > 20) detectScore += 10;
 
-          // 用EBCDIC头范围验证候选位置是否正确
+          // 用EBCDIC头范围验证候选位置是否正确（只验证最小值，因为采样道数有限可能无法覆盖完整范围）
           if (ebcdicInlineRange && inlineArr.length > 0) {
             const minIl = inlineArr[0];
-            const maxIl = inlineArr[inlineArr.length - 1];
-            if (minIl === ebcdicInlineRange[0] && maxIl === ebcdicInlineRange[1]) {
+            if (minIl === ebcdicInlineRange[0]) {
               detectScore += 50;
-            } else if (minIl >= ebcdicInlineRange[0] - 5 && maxIl <= ebcdicInlineRange[1] + 5) {
-              detectScore += 20;
+            } else if (minIl >= ebcdicInlineRange[0] - 5 && minIl <= ebcdicInlineRange[0] + 5) {
+              detectScore += 25;
             }
           }
           if (ebcdicCrosslineRange && crosslineArr.length > 0) {
             const minXl = crosslineArr[0];
-            const maxXl = crosslineArr[crosslineArr.length - 1];
-            if (minXl === ebcdicCrosslineRange[0] && maxXl === ebcdicCrosslineRange[1]) {
+            if (minXl === ebcdicCrosslineRange[0]) {
               detectScore += 50;
-            } else if (minXl >= ebcdicCrosslineRange[0] - 5 && maxXl <= ebcdicCrosslineRange[1] + 5) {
-              detectScore += 20;
+            } else if (minXl >= ebcdicCrosslineRange[0] - 5 && minXl <= ebcdicCrosslineRange[0] + 5) {
+              detectScore += 25;
             }
           }
 
@@ -675,18 +673,16 @@ export default function SegyImportModal({
           if (inlineArr.length > 50) score += 10;
           if (crosslineArr.length > 50) score += 10;
 
-          // 用EBCDIC头范围验证候选位置
+          // 用EBCDIC头范围验证候选位置（只验证最小值）
           if (ebcdicInlineRange && inlineArr.length > 0) {
             const minIl = inlineArr[0];
-            const maxIl = inlineArr[inlineArr.length - 1];
-            if (minIl === ebcdicInlineRange[0] && maxIl === ebcdicInlineRange[1]) score += 50;
-            else if (minIl >= ebcdicInlineRange[0] - 5 && maxIl <= ebcdicInlineRange[1] + 5) score += 20;
+            if (minIl === ebcdicInlineRange[0]) score += 50;
+            else if (minIl >= ebcdicInlineRange[0] - 5 && minIl <= ebcdicInlineRange[0] + 5) score += 25;
           }
           if (ebcdicCrosslineRange && crosslineArr.length > 0) {
             const minXl = crosslineArr[0];
-            const maxXl = crosslineArr[crosslineArr.length - 1];
-            if (minXl === ebcdicCrosslineRange[0] && maxXl === ebcdicCrosslineRange[1]) score += 50;
-            else if (minXl >= ebcdicCrosslineRange[0] - 5 && maxXl <= ebcdicCrosslineRange[1] + 5) score += 20;
+            if (minXl === ebcdicCrosslineRange[0]) score += 50;
+            else if (minXl >= ebcdicCrosslineRange[0] - 5 && minXl <= ebcdicCrosslineRange[0] + 5) score += 25;
           }
 
           if (useBE && dataFormatCode === 1) score += 10;
