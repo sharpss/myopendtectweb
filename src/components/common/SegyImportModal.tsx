@@ -377,7 +377,9 @@ export default function SegyImportModal({
         }
         if (delayCount > 0) {
           const avgDelay = Math.round(delaySum / delayCount);
-          timeStartMs = (avgDelay * sampleInterval) / 1000;
+          if (avgDelay > 0 && avgDelay < 60000) {
+            timeStartMs = avgDelay;
+          }
         } else {
           timeStartMs = 0;
         }
@@ -648,7 +650,9 @@ export default function SegyImportModal({
             bestByteOrder = useBE ? 'big-endian' : 'little-endian';
             if (delayCount > 0) {
               const avgDelay = Math.round(delaySum / delayCount);
-              bestTimeStart = (avgDelay * sampleIntervalRaw) / 1000;
+              if (avgDelay > 0 && avgDelay < 60000) {
+                bestTimeStart = avgDelay;
+              }
             }
           }
         }
@@ -821,12 +825,7 @@ export default function SegyImportModal({
       if (delayCount > 0) {
         const avgDelay = Math.round(delaySum / delayCount);
         if (avgDelay > 0 && avgDelay < 60000) {
-          const siMs = sampleInterval / 1000;
-          if (avgDelay * siMs < 60000) {
-            timeStartMs = avgDelay * siMs;
-          } else {
-            timeStartMs = avgDelay;
-          }
+          timeStartMs = avgDelay;
         }
       }
       const timeEndMs = timeStartMs + ((sampleCount - 1) * sampleInterval) / 1000;

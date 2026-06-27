@@ -677,14 +677,7 @@ function buildFullDataset(
   const avgDelayTime = delayTimeCount > 0 ? Math.round(delayTimeSum / delayTimeCount) : 0;
   let timeStartMs = 0;
   if (avgDelayTime > 0 && avgDelayTime < 60000) {
-    const sampleIntervalMs = analysis.sampleInterval;
-    if (avgDelayTime * sampleIntervalMs < 60000) {
-      timeStartMs = avgDelayTime * sampleIntervalMs;
-    } else {
-      timeStartMs = avgDelayTime;
-    }
-  } else {
-    timeStartMs = 0;
+    timeStartMs = avgDelayTime;
   }
 
   return {
