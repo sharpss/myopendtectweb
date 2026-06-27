@@ -276,6 +276,8 @@ function analyzeSegyFile(
   dataStart: number;
   bytesPerSample: number;
   numExtTextHeaders: number;
+  detectedInlineByte: number;
+  detectedCrosslineByte: number;
 } {
   const fileBuffer = fs.readFileSync(filePath);
 
@@ -290,14 +292,24 @@ function analyzeSegyFile(
     : textHeaderBuffer.toString('ascii');
   const textHeaderLines = formatTextHeader(textHeaderRaw, 80);
 
+  // 从EBCDIC头解析Inline/Crossline范围提示
+  let ebcdicInlineRange: [number, number] | null = null;
+  let ebcdicCrosslineRange: [number, number] | null = null;
+  for (const line of textHeaderLines) {
+    const ilMatch = line.match(/First\s+inline\s*:\s*(\d+)\s+Last\s+inline\s*:\s*(\d+)/i);
+    if (ilMatch) ebcdicInlineRange = [parseInt(ilMatch[1]), parseInt(ilMatch[2])];
+    const xlMatch = line.match(/First\s+xline\s*:\s*(\d+)\s+Last\s+xline\s*:\s*(\d+)/i);
+    if (xlMatch) ebcdicCrosslineRange = [parseInt(xlMatch[1]), parseInt(xlMatch[2])];
+  }
+
   const binaryHeaderOffset = 3200;
   
-  const tryParseWithByteOrder = (be: boolean) => {
+  const tryParseWithByteOrder = (be: boolean, ilByte: number, xlByte: number) => {
     const bh = parseBinaryHeader(fileBuffer, binaryHeaderOffset, be);
     let extHeaders = Math.max(0, bh.numExtTextHeaders);
     let dataStart = 3600 + extHeaders * 3200;
-    let sc = options.sampleCount || bh.samplesPerTrace || 1000;
-    let dfc = options.dataFormatCode || bh.dataFormatCode || 5;
+    let sc = bh.samplesPerTrace || 1000;
+    let dfc = bh.dataFormatCode || 5;
     let si = bh.sampleInterval || 4000;
 
     let bps = 4;
@@ -328,8 +340,8 @@ function analyzeSegyFile(
     for (let i = 0; i < sampleTraceCount; i++) {
       const traceOffset = dataStart + i * ts;
       if (traceOffset + ths > fileBuffer.length) break;
-      const il = readInt32(fileBuffer, traceOffset + inlineByte - 1, be);
-      const xl = readInt32(fileBuffer, traceOffset + crosslineByte - 1, be);
+      const il = readInt32(fileBuffer, traceOffset + ilByte - 1, be);
+      const xl = readInt32(fileBuffer, traceOffset + xlByte - 1, be);
       if (il !== undefined && il !== null && isFinite(il) && il > 0 && il < 100000000) {
         inlines.add(il);
       }
@@ -369,6 +381,23 @@ function analyzeSegyFile(
       if (ratio > 0.5 && ratio < 2) score += 25;
       else if (ratio > 0.2 && ratio < 5) score += 10;
       else if (ratio > 0.1 && ratio < 10) score += 3;
+
+      // IBM浮点大端序优先
+      if (be && dfc === 1) score += 10;
+
+      // 用EBCDIC头范围验证
+      if (ebcdicInlineRange && ila.length > 0) {
+        const minIl = ila[0];
+        const maxIl = ila[ila.length - 1];
+        if (minIl === ebcdicInlineRange[0] && maxIl === ebcdicInlineRange[1]) score += 50;
+        else if (minIl >= ebcdicInlineRange[0] - 5 && maxIl <= ebcdicInlineRange[1] + 5) score += 20;
+      }
+      if (ebcdicCrosslineRange && cla.length > 0) {
+        const minXl = cla[0];
+        const maxXl = cla[cla.length - 1];
+        if (minXl === ebcdicCrosslineRange[0] && maxXl === ebcdicCrosslineRange[1]) score += 50;
+        else if (minXl >= ebcdicCrosslineRange[0] - 5 && maxXl <= ebcdicCrosslineRange[1] + 5) score += 20;
+      }
     }
 
     return {
@@ -387,13 +416,30 @@ function analyzeSegyFile(
     };
   };
 
-  let parseResult = tryParseWithByteOrder(bigEndian);
-  
-  if (!options.byteOrder) {
-    const parseResultLE = tryParseWithByteOrder(false);
-    if (parseResultLE.score > parseResult.score) {
-      parseResult = parseResultLE;
-      bigEndian = false;
+  // 测试多种字节位置候选和字节序组合，选择得分最高的
+  const candidatePositions = [
+    { il: inlineByte, xl: crosslineByte },
+    { il: 9, xl: 21 },
+    { il: 21, xl: 9 },
+    { il: 189, xl: 193 },
+    { il: 193, xl: 189 },
+    { il: 5, xl: 21 },
+    { il: 73, xl: 77 },
+  ];
+
+  let parseResult: ReturnType<typeof tryParseWithByteOrder> | null = null;
+  let bestIlByte = inlineByte;
+  let bestXlByte = crosslineByte;
+
+  for (const cand of candidatePositions) {
+    for (const be of [true, false]) {
+      const result = tryParseWithByteOrder(be, cand.il, cand.xl);
+      if (!parseResult || result.score > parseResult.score) {
+        parseResult = result;
+        bigEndian = be;
+        bestIlByte = cand.il;
+        bestXlByte = cand.xl;
+      }
     }
   }
 
@@ -411,8 +457,8 @@ function analyzeSegyFile(
       fileBuffer,
       traceOffset,
       bigEndian,
-      inlineByte,
-      crosslineByte
+      bestIlByte,
+      bestXlByte
     );
 
     sampleTraces.push({
@@ -504,6 +550,8 @@ function analyzeSegyFile(
     dataStart,
     bytesPerSample,
     numExtTextHeaders: extHeaders,
+    detectedInlineByte: bestIlByte,
+    detectedCrosslineByte: bestXlByte,
   };
 }
 
@@ -575,6 +623,8 @@ function buildFullDataset(
   const bigEndian = analysis.byteOrder !== 'little-endian';
   const actualSampleCount = analysis.sampleCount;
   const actualDataFormat = analysis.dataFormatCode;
+  const actualInlineByte = analysis.detectedInlineByte || inlineByte;
+  const actualCrosslineByte = analysis.detectedCrosslineByte || crosslineByte;
   const traceHeaderSize = 240;
   let bytesPerSample = 4;
   if (actualDataFormat === 3) bytesPerSample = 2;
@@ -606,8 +656,8 @@ function buildFullDataset(
       fileBuffer,
       traceOffset,
       bigEndian,
-      inlineByte,
-      crosslineByte
+      actualInlineByte,
+      actualCrosslineByte
     );
 
     if (!isValidInline(header.inline) || !isValidCrossline(header.crossline)) {
