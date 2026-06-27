@@ -340,11 +340,36 @@ function analyzeSegyFile(
 
     let score = 0;
     if (dfc >= 1 && dfc <= 8) score += 10;
+    if (dfc === 1) score += 15;
     if (sc >= 100 && sc <= 50000) score += 10;
     if (si >= 100 && si <= 10000) score += 5;
     if (extHeaders >= 0 && extHeaders <= 10) score += 3;
     if (inlines.size > 5) score += 5;
+    if (crosslines.size > 5) score += 5;
+    if (inlines.size > 50) score += 10;
+    if (crosslines.size > 50) score += 10;
     if (tt > 100) score += 5;
+    if (tt > 0) {
+      let ic = 1, xc = 1;
+      const ila = Array.from(inlines).sort((a, b) => a - b);
+      const cla = Array.from(crosslines).sort((a, b) => a - b);
+      if (ila.length > 1) {
+        const st: number[] = [];
+        for (let i = 1; i < ila.length; i++) { const d = ila[i] - ila[i-1]; if (d > 0) st.push(d); }
+        const step = st.length > 0 ? Math.min(...st) : 1;
+        ic = Math.floor((ila[ila.length-1] - ila[0]) / step) + 1;
+      }
+      if (cla.length > 1) {
+        const st: number[] = [];
+        for (let i = 1; i < cla.length; i++) { const d = cla[i] - cla[i-1]; if (d > 0) st.push(d); }
+        const step = st.length > 0 ? Math.min(...st) : 1;
+        xc = Math.floor((cla[cla.length-1] - cla[0]) / step) + 1;
+      }
+      const ratio = (ic * xc) / tt;
+      if (ratio > 0.5 && ratio < 2) score += 25;
+      else if (ratio > 0.2 && ratio < 5) score += 10;
+      else if (ratio > 0.1 && ratio < 10) score += 3;
+    }
 
     return {
       bh,
@@ -653,11 +678,15 @@ function buildFullDataset(
 
   const avgDelayTime = delayTimeCount > 0 ? Math.round(delayTimeSum / delayTimeCount) : 0;
   let timeStartMs = 0;
-  if (avgDelayTime > 0 && avgDelayTime < 100000) {
-    timeStartMs = avgDelayTime;
-    if (avgDelayTime > 1000) {
-      timeStartMs = avgDelayTime / 1000;
+  if (avgDelayTime > 0 && avgDelayTime < 60000) {
+    const sampleIntervalMs = analysis.sampleInterval;
+    if (avgDelayTime * sampleIntervalMs < 60000) {
+      timeStartMs = avgDelayTime * sampleIntervalMs;
+    } else {
+      timeStartMs = avgDelayTime;
     }
+  } else {
+    timeStartMs = 0;
   }
 
   return {

@@ -66,6 +66,8 @@ type ParseResult = {
   lineNumber?: number;
   reelNumber?: number;
   fixedLengthTraceFlag?: number;
+  detectedInlineByte?: number;
+  detectedCrosslineByte?: number;
 };
 
 export default function SegyImportModal({
@@ -189,15 +191,11 @@ export default function SegyImportModal({
         const view = new DataView(buffer);
         const bhOffset = 3200;
         
-        const jobId = view.getInt32(bhOffset + 0, bigEndian);
-        const lineNumber = view.getInt32(bhOffset + 4, bigEndian);
-        const reelNumber = view.getInt32(bhOffset + 8, bigEndian);
         const sampleIntervalRaw = view.getUint16(bhOffset + 16, bigEndian);
         const samplesPerTraceRaw = view.getUint16(bhOffset + 20, bigEndian);
         const dataFormatCodeRaw = view.getUint16(bhOffset + 24, bigEndian);
         const segyRevMajor = view.getUint8(bhOffset + 300);
         const segyRevMinor = view.getUint8(bhOffset + 301);
-        const fixedLengthTrace = view.getUint16(bhOffset + 302, bigEndian);
         const numExtTextHeaders = view.getInt16(bhOffset + 304, bigEndian);
 
         let sampleCount = samplesPerTraceRaw || 0;
@@ -238,10 +236,122 @@ export default function SegyImportModal({
           dataStart + maxSampleTraces * traceSize
         );
 
-        const readTraceHeaderFull = (idx: number): TraceHeaderMap | null => {
+        const candidatePositions = [
+          { il: 9, xl: 21, name: 'G&G / ProMAX' },
+          { il: 5, xl: 21, name: 'ProMAX' },
+          { il: 189, xl: 193, name: 'SEGY Rev 1' },
+          { il: 73, xl: 77, name: '坐标' },
+          { il: 21, xl: 25, name: 'Ensemble' },
+        ];
+
+        let bestIlPos = 189;
+        let bestXlPos = 193;
+        let bestInlineCount = 1;
+        let bestCrosslineCount = 1;
+        let bestInlineRange: [number, number] = [1, 1];
+        let bestCrosslineRange: [number, number] = [1, 1];
+        let bestInlineArrLen = 0;
+        let bestCrosslineArrLen = 0;
+        let bestDetectScore = -1;
+        let bestFirstTrace: TraceHeaderMap | null = null;
+
+        const readTraceHeaderAt = (idx: number, ilPos: number, xlPos: number) => {
           const traceOffset = dataStart + idx * traceSize;
           if (traceOffset + traceHeaderSize > buffer.byteLength) return null;
+          const il = view.getInt32(traceOffset + ilPos - 1, bigEndian);
+          const xl = view.getInt32(traceOffset + xlPos - 1, bigEndian);
+          const delay = view.getInt16(traceOffset + 108, bigEndian);
+          return { il, xl, delay, offset: traceOffset };
+        };
 
+        for (const cand of candidatePositions) {
+          const inlineSet = new Set<number>();
+          const crosslineSet = new Set<number>();
+          let firstTraceForCand: any = null;
+          const sampleTraces = Math.min(
+            maxSampleTraces,
+            Math.floor((Math.min(buffer.byteLength, sampleBufferSize) - dataStart) / traceSize)
+          );
+
+          for (let i = 0; i < sampleTraces; i++) {
+            const th = readTraceHeaderAt(i, cand.il, cand.xl);
+            if (th) {
+              if (!firstTraceForCand) firstTraceForCand = th;
+              const il = th.il;
+              const xl = th.xl;
+              if (isFinite(il) && il > 0 && il < 100000000) inlineSet.add(il);
+              if (isFinite(xl) && xl > 0 && xl < 100000000) crosslineSet.add(xl);
+            }
+          }
+
+          const inlineArr = Array.from(inlineSet).sort((a, b) => a - b);
+          const crosslineArr = Array.from(crosslineSet).sort((a, b) => a - b);
+
+          let detectScore = 0;
+          let inlineCount = 1;
+          let crosslineCount = 1;
+          let inlineRange: [number, number] = [1, 1];
+          let crosslineRange: [number, number] = [1, 1];
+
+          if (inlineArr.length > 1) {
+            detectScore += 10;
+            const minIl = inlineArr[0];
+            const maxIl = inlineArr[inlineArr.length - 1];
+            const steps: number[] = [];
+            for (let i = 1; i < inlineArr.length; i++) {
+              const diff = inlineArr[i] - inlineArr[i - 1];
+              if (diff > 0) steps.push(diff);
+            }
+            const stepIl = steps.length > 0 ? Math.min(...steps) : 1;
+            if (stepIl > 0 && stepIl < 1000) detectScore += 10;
+            inlineCount = Math.floor((maxIl - minIl) / stepIl) + 1;
+            inlineRange = [minIl, maxIl];
+          }
+          if (crosslineArr.length > 1) {
+            detectScore += 10;
+            const minXl = crosslineArr[0];
+            const maxXl = crosslineArr[crosslineArr.length - 1];
+            const steps: number[] = [];
+            for (let i = 1; i < crosslineArr.length; i++) {
+              const diff = crosslineArr[i] - crosslineArr[i - 1];
+              if (diff > 0) steps.push(diff);
+            }
+            const stepXl = steps.length > 0 ? Math.min(...steps) : 1;
+            if (stepXl > 0 && stepXl < 1000) detectScore += 10;
+            crosslineCount = Math.floor((maxXl - minXl) / stepXl) + 1;
+            crosslineRange = [minXl, maxXl];
+          }
+
+          if (inlineArr.length > 5) detectScore += 5;
+          if (crosslineArr.length > 5) detectScore += 5;
+
+          if (totalTraces > 0) {
+            const ratio = (inlineCount * crosslineCount) / totalTraces;
+            if (ratio > 0.3 && ratio < 3) detectScore += 20;
+            else if (ratio > 0.1 && ratio < 10) detectScore += 8;
+          }
+
+          if (inlineArr.length > 20 && crosslineArr.length > 20) detectScore += 10;
+
+          if (cand.il === 9 && cand.xl === 21) detectScore += 3;
+
+          if (detectScore > bestDetectScore) {
+            bestDetectScore = detectScore;
+            bestIlPos = cand.il;
+            bestXlPos = cand.xl;
+            bestInlineCount = inlineCount;
+            bestCrosslineCount = crosslineCount;
+            bestInlineRange = inlineRange;
+            bestCrosslineRange = crosslineRange;
+            bestInlineArrLen = inlineArr.length;
+            bestCrosslineArrLen = crosslineArr.length;
+            bestFirstTrace = firstTraceForCand;
+          }
+        }
+
+        const readFirstTraceFull = (): TraceHeaderMap | null => {
+          const traceOffset = dataStart;
+          if (traceOffset + traceHeaderSize > buffer.byteLength) return null;
           const headerInt32: TraceHeaderMap = {};
           for (let bytePos = 1; bytePos <= 240 - 3; bytePos += 4) {
             headerInt32[bytePos] = view.getInt32(traceOffset + bytePos - 1, bigEndian);
@@ -250,104 +360,29 @@ export default function SegyImportModal({
           return headerInt32;
         };
 
-        const getTraceInt32 = (
-          th: TraceHeaderMap,
-          bytePos: number
-        ): number => {
-          if (bytePos < 1 || bytePos > 240 - 3) return 0;
-          const alignedPos = bytePos % 4 === 1 
-            ? bytePos 
-            : bytePos - (bytePos - 1) % 4;
-          if (th[alignedPos] !== undefined) {
-            return th[alignedPos];
-          }
-          const traceOffset = th.__offset;
-          if (traceOffset === undefined) return 0;
-          return view.getInt32(traceOffset + bytePos - 1, bigEndian);
-        };
+        const firstTrace = readFirstTraceFull();
 
-        const firstTrace = readTraceHeaderFull(0);
-
-        const inlineSet = new Set<number>();
-        const crosslineSet = new Set<number>();
-        const sampleTraces = Math.min(
-          maxSampleTraces,
-          Math.floor((Math.min(buffer.byteLength, sampleBufferSize) - dataStart) / traceSize)
-        );
-
-        for (let i = 0; i < sampleTraces; i++) {
-          const th = readTraceHeaderFull(i);
-          if (th) {
-            const ilPos = options.inlineByte || 189;
-            const xlPos = options.crosslineByte || 193;
-            const il = getTraceInt32(th, ilPos);
-            const xl = getTraceInt32(th, xlPos);
-            if (il !== undefined && il !== null && Math.abs(il) < 1000000 && il !== 0) {
-              inlineSet.add(il);
-            }
-            if (xl !== undefined && xl !== null && Math.abs(xl) < 1000000 && xl !== 0) {
-              crosslineSet.add(xl);
-            }
+        let timeStartMs = 0;
+        let delaySum = 0;
+        let delayCount = 0;
+        const sampleTracesForDelay = Math.min(100, Math.floor((buffer.byteLength - dataStart) / traceSize));
+        for (let i = 0; i < sampleTracesForDelay; i++) {
+          const traceOffset = dataStart + i * traceSize;
+          if (traceOffset + 240 > buffer.byteLength) break;
+          const delay = view.getInt16(traceOffset + 108, bigEndian);
+          if (delay >= 0 && delay < 60000) {
+            delaySum += delay;
+            delayCount++;
           }
         }
-
-        const inlineArr = Array.from(inlineSet).sort((a, b) => a - b);
-        const crosslineArr = Array.from(crosslineSet).sort((a, b) => a - b);
-
-        let inlineCount: number;
-        let crosslineCount: number;
-        let inlineRange: [number, number];
-        let crosslineRange: [number, number];
-
-        if (inlineArr.length > 1) {
-          const minIl = inlineArr[0];
-          const maxIl = inlineArr[inlineArr.length - 1];
-          const steps = [];
-          for (let i = 1; i < inlineArr.length; i++) {
-            const diff = inlineArr[i] - inlineArr[i - 1];
-            if (diff > 0) steps.push(diff);
-          }
-          const stepIl = steps.length > 0 ? Math.min(...steps) : 1;
-          inlineCount = Math.floor((maxIl - minIl) / stepIl) + 1;
-          inlineRange = [minIl, maxIl];
-        } else if (inlineArr.length === 1) {
-          inlineCount = 1;
-          inlineRange = [inlineArr[0], inlineArr[0]];
+        if (delayCount > 0) {
+          const avgDelay = Math.round(delaySum / delayCount);
+          timeStartMs = (avgDelay * sampleInterval) / 1000;
         } else {
-          inlineCount = Math.max(1, Math.floor(Math.sqrt(totalTraces)));
-          inlineRange = [1, inlineCount];
+          timeStartMs = 0;
         }
 
-        if (crosslineArr.length > 1) {
-          const minXl = crosslineArr[0];
-          const maxXl = crosslineArr[crosslineArr.length - 1];
-          const steps = [];
-          for (let i = 1; i < crosslineArr.length; i++) {
-            const diff = crosslineArr[i] - crosslineArr[i - 1];
-            if (diff > 0) steps.push(diff);
-          }
-          const stepXl = steps.length > 0 ? Math.min(...steps) : 1;
-          crosslineCount = Math.floor((maxXl - minXl) / stepXl) + 1;
-          crosslineRange = [minXl, maxXl];
-        } else if (crosslineArr.length === 1) {
-          crosslineCount = 1;
-          crosslineRange = [crosslineArr[0], crosslineArr[0]];
-        } else {
-          crosslineCount = Math.max(1, Math.ceil(totalTraces / Math.max(1, inlineCount)));
-          crosslineRange = [1, crosslineCount];
-        }
-
-        if (totalTraces > 0 && inlineCount * crosslineCount < totalTraces * 0.1) {
-          const estCount = Math.max(inlineCount, crosslineCount);
-          const otherCount = Math.ceil(totalTraces / estCount);
-          if (inlineArr.length >= crosslineArr.length) {
-            crosslineCount = otherCount;
-            crosslineRange = [1, otherCount];
-          } else {
-            inlineCount = otherCount;
-            inlineRange = [1, otherCount];
-          }
-        }
+        const timeEndMs = timeStartMs + ((sampleCount - 1) * sampleInterval) / 1000;
 
         return {
           byteOrder,
@@ -363,15 +398,17 @@ export default function SegyImportModal({
           totalTraces,
           segyRevision: segyRevMajor > 0 ? `${segyRevMajor}.${segyRevMinor}` : 'Rev 0',
           firstTraceHeader: firstTrace,
-          inlineCount,
-          crosslineCount,
-          inlineRange,
-          crosslineRange,
-          inlineArrLen: inlineArr.length,
-          crosslineArrLen: crosslineArr.length,
-          timeStartMs: 0,
-          timeEndMs: ((sampleCount - 1) * sampleInterval) / 1000,
+          inlineCount: bestInlineCount,
+          crosslineCount: bestCrosslineCount,
+          inlineRange: bestInlineRange,
+          crosslineRange: bestCrosslineRange,
+          inlineArrLen: bestInlineArrLen,
+          crosslineArrLen: bestCrosslineArrLen,
+          timeStartMs,
+          timeEndMs,
           numExtTextHeaders: extHeaders,
+          detectedInlineByte: bestIlPos,
+          detectedCrosslineByte: bestXlPos,
         };
       };
 
@@ -388,18 +425,31 @@ export default function SegyImportModal({
       let scoreBE = 0;
       let scoreLE = 0;
 
-      if (resultBE.dataFormatCode >= 1 && resultBE.dataFormatCode <= 8) scoreBE += 10;
-      if (resultLE.dataFormatCode >= 1 && resultLE.dataFormatCode <= 8) scoreLE += 10;
-      if (resultBE.sampleCount >= 100 && resultBE.sampleCount <= 50000) scoreBE += 10;
-      if (resultLE.sampleCount >= 100 && resultLE.sampleCount <= 50000) scoreLE += 10;
-      if (resultBE.sampleInterval >= 100 && resultBE.sampleInterval <= 10000) scoreBE += 5;
-      if (resultLE.sampleInterval >= 100 && resultLE.sampleInterval <= 10000) scoreLE += 5;
-      if (resultBE.numExtTextHeaders >= 0 && resultBE.numExtTextHeaders <= 10) scoreBE += 3;
-      if (resultLE.numExtTextHeaders >= 0 && resultLE.numExtTextHeaders <= 10) scoreLE += 3;
-      if (resultBE.inlineArrLen > 5) scoreBE += 5;
-      if (resultLE.inlineArrLen > 5) scoreLE += 5;
-      if (resultBE.totalTraces > 100) scoreBE += 5;
-      if (resultLE.totalTraces > 100) scoreLE += 5;
+      const calcByteOrderScore = (r: ParseResult) => {
+        let s = 0;
+        if (r.dataFormatCode >= 1 && r.dataFormatCode <= 8) s += 10;
+        if (r.dataFormatCode === 1) s += 15;
+        if (r.sampleCount >= 100 && r.sampleCount <= 50000) s += 10;
+        if (r.sampleInterval >= 100 && r.sampleInterval <= 10000) s += 5;
+        if (r.numExtTextHeaders >= 0 && r.numExtTextHeaders <= 10) s += 3;
+        if (r.inlineArrLen > 5) s += 5;
+        if (r.crosslineArrLen > 5) s += 5;
+        if (r.inlineArrLen > 50) s += 10;
+        if (r.crosslineArrLen > 50) s += 10;
+        if (r.totalTraces > 100) s += 5;
+        if (r.totalTraces > 0) {
+          const ratio = (r.inlineCount * r.crosslineCount) / r.totalTraces;
+          if (ratio > 0.5 && ratio < 2) s += 25;
+          else if (ratio > 0.2 && ratio < 5) s += 10;
+          else if (ratio > 0.1 && ratio < 10) s += 3;
+        }
+        return s;
+      };
+
+      scoreBE = calcByteOrderScore(resultBE);
+      scoreLE = calcByteOrderScore(resultLE);
+
+      if (resultBE.dataFormatCode === 1) scoreBE += 20;
 
       const result = scoreBE >= scoreLE ? resultBE : resultLE;
       const detectedByteOrder = scoreBE >= scoreLE ? 'big-endian' : 'little-endian';
@@ -408,6 +458,8 @@ export default function SegyImportModal({
         ...prev,
         byteOrder: detectedByteOrder,
         dataFormat: result.dataFormatCode,
+        inlineByte: result.detectedInlineByte || 189,
+        crosslineByte: result.detectedCrosslineByte || 193,
       }));
 
       setTextHeaderLines(result.textHeaderLines);
@@ -482,7 +534,7 @@ export default function SegyImportModal({
       const dataFormatCode = parsedData.dataFormatCode || options.dataFormat || 5;
       const sampleCount = parsedData.sampleCount || 1000;
       const numExtHeaders = parsedData.numExtTextHeaders || 0;
-      const bigEndian = options.byteOrder === 'big-endian';
+      const sampleIntervalRaw = parsedData.sampleInterval * 1000 || 4000;
       
       let bytesPerSample = 4;
       if (dataFormatCode === 1 || dataFormatCode === 2 || dataFormatCode === 5) bytesPerSample = 4;
@@ -497,11 +549,10 @@ export default function SegyImportModal({
       const view = new DataView(buffer);
 
       const candidatePositions = [
+        { il: 9, xl: 21, name: 'G&G / ProMAX' },
+        { il: 5, xl: 21, name: 'ProMAX' },
         { il: 189, xl: 193, name: '标准 SEGY (Rev 1)' },
-        { il: 9, xl: 21, name: 'G&G / 自定义格式' },
-        { il: 5, xl: 21, name: 'ProMAX 格式' },
         { il: 73, xl: 77, name: '坐标位置' },
-        { il: 1, xl: 5, name: '道序号位置' },
         { il: 21, xl: 25, name: 'Ensemble 位置' },
       ];
 
@@ -511,83 +562,105 @@ export default function SegyImportModal({
       let bestCrosslineRange: [number, number] = [1, 1];
       let bestInlineCount = 1;
       let bestCrosslineCount = 1;
+      let bestByteOrder: 'big-endian' | 'little-endian' = 'big-endian';
+      let bestTimeStart = 0;
 
-      for (const candidate of candidatePositions) {
-        const inlineSet = new Set<number>();
-        const crosslineSet = new Set<number>();
-        const sampleTraces = Math.min(previewTraces, Math.floor((buffer.byteLength - dataStart) / traceSize));
+      for (const useBE of [true, false]) {
+        for (const candidate of candidatePositions) {
+          const inlineSet = new Set<number>();
+          const crosslineSet = new Set<number>();
+          let delaySum = 0;
+          let delayCount = 0;
+          const sampleTraces = Math.min(previewTraces, Math.floor((buffer.byteLength - dataStart) / traceSize));
 
-        for (let i = 0; i < sampleTraces; i++) {
-          const traceOffset = dataStart + i * traceSize;
-          if (traceOffset + 240 > buffer.byteLength) break;
-          
-          const il = view.getInt32(traceOffset + candidate.il - 1, bigEndian);
-          const xl = view.getInt32(traceOffset + candidate.xl - 1, bigEndian);
-          
-          if (isFinite(il) && il > 0 && il < 100000000) inlineSet.add(il);
-          if (isFinite(xl) && xl > 0 && xl < 100000000) crosslineSet.add(xl);
-        }
-
-        const inlineArr = Array.from(inlineSet).sort((a, b) => a - b);
-        const crosslineArr = Array.from(crosslineSet).sort((a, b) => a - b);
-
-        let score = 0;
-        let inlineCount = 1;
-        let crosslineCount = 1;
-        let inlineRange: [number, number] = [1, 1];
-        let crosslineRange: [number, number] = [1, 1];
-
-        if (inlineArr.length > 1) {
-          score += 10;
-          const minIl = inlineArr[0], maxIl = inlineArr[inlineArr.length - 1];
-          const steps = [];
-          for (let i = 1; i < inlineArr.length; i++) {
-            const diff = inlineArr[i] - inlineArr[i - 1];
-            if (diff > 0) steps.push(diff);
+          for (let i = 0; i < sampleTraces; i++) {
+            const traceOffset = dataStart + i * traceSize;
+            if (traceOffset + 240 > buffer.byteLength) break;
+            
+            const il = view.getInt32(traceOffset + candidate.il - 1, useBE);
+            const xl = view.getInt32(traceOffset + candidate.xl - 1, useBE);
+            const delay = view.getInt16(traceOffset + 108, useBE);
+            
+            if (isFinite(il) && il > 0 && il < 100000000) inlineSet.add(il);
+            if (isFinite(xl) && xl > 0 && xl < 100000000) crosslineSet.add(xl);
+            if (delay >= 0 && delay < 60000) { delaySum += delay; delayCount++; }
           }
-          const stepIl = steps.length > 0 ? Math.min(...steps) : 1;
-          if (stepIl > 0 && stepIl < 1000) score += 10;
-          inlineCount = Math.floor((maxIl - minIl) / stepIl) + 1;
-          inlineRange = [minIl, maxIl];
-        }
-        if (crosslineArr.length > 1) {
-          score += 10;
-          const minXl = crosslineArr[0], maxXl = crosslineArr[crosslineArr.length - 1];
-          const steps = [];
-          for (let i = 1; i < crosslineArr.length; i++) {
-            const diff = crosslineArr[i] - crosslineArr[i - 1];
-            if (diff > 0) steps.push(diff);
+
+          const inlineArr = Array.from(inlineSet).sort((a, b) => a - b);
+          const crosslineArr = Array.from(crosslineSet).sort((a, b) => a - b);
+
+          let score = 0;
+          let inlineCount = 1;
+          let crosslineCount = 1;
+          let inlineRange: [number, number] = [1, 1];
+          let crosslineRange: [number, number] = [1, 1];
+
+          if (inlineArr.length > 1) {
+            score += 10;
+            const minIl = inlineArr[0], maxIl = inlineArr[inlineArr.length - 1];
+            const steps: number[] = [];
+            for (let i = 1; i < inlineArr.length; i++) {
+              const diff = inlineArr[i] - inlineArr[i - 1];
+              if (diff > 0) steps.push(diff);
+            }
+            const stepIl = steps.length > 0 ? Math.min(...steps) : 1;
+            if (stepIl > 0 && stepIl < 1000) score += 10;
+            inlineCount = Math.floor((maxIl - minIl) / stepIl) + 1;
+            inlineRange = [minIl, maxIl];
           }
-          const stepXl = steps.length > 0 ? Math.min(...steps) : 1;
-          if (stepXl > 0 && stepXl < 1000) score += 10;
-          crosslineCount = Math.floor((maxXl - minXl) / stepXl) + 1;
-          crosslineRange = [minXl, maxXl];
-        }
+          if (crosslineArr.length > 1) {
+            score += 10;
+            const minXl = crosslineArr[0], maxXl = crosslineArr[crosslineArr.length - 1];
+            const steps: number[] = [];
+            for (let i = 1; i < crosslineArr.length; i++) {
+              const diff = crosslineArr[i] - crosslineArr[i - 1];
+              if (diff > 0) steps.push(diff);
+            }
+            const stepXl = steps.length > 0 ? Math.min(...steps) : 1;
+            if (stepXl > 0 && stepXl < 1000) score += 10;
+            crosslineCount = Math.floor((maxXl - minXl) / stepXl) + 1;
+            crosslineRange = [minXl, maxXl];
+          }
 
-        if (inlineArr.length > 5) score += 5;
-        if (crosslineArr.length > 5) score += 5;
+          if (inlineArr.length > 5) score += 5;
+          if (crosslineArr.length > 5) score += 5;
+          if (inlineArr.length > 50) score += 10;
+          if (crosslineArr.length > 50) score += 10;
 
-        const totalTraces = parsedData.estimatedTraces || sampleTraces;
-        if (totalTraces > 0) {
-          const ratio = (inlineCount * crosslineCount) / totalTraces;
-          if (ratio > 0.3 && ratio < 3) score += 15;
-          else if (ratio > 0.1 && ratio < 10) score += 5;
-        }
+          if (candidate.il === 9 && candidate.xl === 21) score += 3;
+          if (useBE && dataFormatCode === 1) score += 10;
 
-        if (score > bestScore) {
-          bestScore = score;
-          bestCandidate = candidate;
-          bestInlineCount = inlineCount;
-          bestCrosslineCount = crosslineCount;
-          bestInlineRange = inlineRange;
-          bestCrosslineRange = crosslineRange;
+          const totalTraces = parsedData.estimatedTraces || sampleTraces;
+          if (totalTraces > 0) {
+            const ratio = (inlineCount * crosslineCount) / totalTraces;
+            if (ratio > 0.5 && ratio < 2) score += 25;
+            else if (ratio > 0.3 && ratio < 3) score += 15;
+            else if (ratio > 0.1 && ratio < 10) score += 5;
+          }
+
+          if (score > bestScore) {
+            bestScore = score;
+            bestCandidate = candidate;
+            bestInlineCount = inlineCount;
+            bestCrosslineCount = crosslineCount;
+            bestInlineRange = inlineRange;
+            bestCrosslineRange = crosslineRange;
+            bestByteOrder = useBE ? 'big-endian' : 'little-endian';
+            if (delayCount > 0) {
+              const avgDelay = Math.round(delaySum / delayCount);
+              bestTimeStart = (avgDelay * sampleIntervalRaw) / 1000;
+            }
+          }
         }
       }
+
+      const timeEndMs = bestTimeStart + ((sampleCount - 1) * sampleIntervalRaw) / 1000;
 
       setOptions(prev => ({
         ...prev,
         inlineByte: bestCandidate.il,
         crosslineByte: bestCandidate.xl,
+        byteOrder: bestByteOrder,
         preset: bestCandidate.name,
       }));
 
@@ -597,6 +670,8 @@ export default function SegyImportModal({
         crosslineCount: bestCrosslineCount,
         inlineRange: bestInlineRange,
         crosslineRange: bestCrosslineRange,
+        timeRange: [bestTimeStart, timeEndMs],
+        byteOrder: bestByteOrder,
       }));
 
       await reparseWithNewBytes();
