@@ -14,10 +14,14 @@ import {
   Pause,
   SkipBack,
   SkipForward,
+  Activity,
+  Layers,
+  Target,
+  Crosshair,
 } from 'lucide-react';
 import { useViewerStore } from '../../store/viewerStore';
 import { useSeismicStore } from '../../store/seismicStore';
-import { ColormapType } from '../../../shared/types';
+import { ColormapType, DisplayMode, PickMode, WigglePolarity } from '../../../shared/types';
 import { cn } from '../../lib/utils';
 
 type TabType = 'display' | 'colormap' | 'attributes' | 'settings';
@@ -28,13 +32,34 @@ interface RightPanelProps {
 }
 
 const colormapList: { id: ColormapType; name: string; colors: string[] }[] = [
-  { id: 'seismic', name: 'Seismic', colors: ['#0000ff', '#ffffff', '#ff0000'] },
-  { id: 'gray', name: 'Gray', colors: ['#000000', '#ffffff'] },
-  { id: 'rainbow', name: 'Rainbow', colors: ['#440088', '#0000ff', '#00ffff', '#00ff00', '#ffff00', '#ff0000'] },
-  { id: 'hot', name: 'Hot', colors: ['#000000', '#ff0000', '#ffff00', '#ffffff'] },
-  { id: 'cool', name: 'Cool', colors: ['#00ffff', '#ff00ff'] },
+  { id: 'seismic', name: '红蓝白', colors: ['#0000ff', '#ffffff', '#ff0000'] },
+  { id: 'red_white_blue', name: '红-白-蓝', colors: ['#ff0000', '#ffffff', '#0000ff'] },
+  { id: 'black_red', name: '黑-红', colors: ['#000000', '#880000', '#ff0000', '#ffff00'] },
+  { id: 'gray', name: '灰度', colors: ['#000000', '#ffffff'] },
+  { id: 'rainbow', name: '彩虹', colors: ['#440088', '#0000ff', '#00ffff', '#00ff00', '#ffff00', '#ff0000'] },
+  { id: 'hot', name: '热色', colors: ['#000000', '#ff0000', '#ffff00', '#ffffff'] },
+  { id: 'cool', name: '冷色', colors: ['#00ffff', '#ff00ff'] },
   { id: 'viridis', name: 'Viridis', colors: ['#440a67', '#21918c', '#fde725'] },
   { id: 'plasma', name: 'Plasma', colors: ['#0d0887', '#cc4678', '#f0f921'] },
+];
+
+const displayModes: { id: DisplayMode; label: string; icon: React.ReactNode }[] = [
+  { id: 'vd', label: '变密度', icon: <Layers className="w-3 h-3" /> },
+  { id: 'wiggle', label: '波形', icon: <Activity className="w-3 h-3" /> },
+  { id: 'va', label: '变面积', icon: <Activity className="w-3 h-3" /> },
+  { id: 'wiggle_va', label: '波形+变面积', icon: <Layers className="w-3 h-3" /> },
+];
+
+const pickModes: { id: PickMode; label: string }[] = [
+  { id: 'manual', label: '手动' },
+  { id: 'peak', label: '波峰' },
+  { id: 'trough', label: '波谷' },
+];
+
+const wigglePolarities: { id: WigglePolarity; label: string }[] = [
+  { id: 'positive', label: '正' },
+  { id: 'negative', label: '负' },
+  { id: 'both', label: '双向' },
 ];
 
 const attributeList = [
@@ -49,7 +74,7 @@ export default function RightPanel({ isCollapsed, onToggleCollapse }: RightPanel
   const [activeTab, setActiveTab] = useState<TabType>('display');
   const [isAnimating, setIsAnimating] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    new Set(['appearance', 'animation', 'slice-control'])
+    new Set(['display-mode', 'appearance', 'gain-control', 'interpretation', 'slice-control', 'animation'])
   );
 
   const {
@@ -57,10 +82,24 @@ export default function RightPanel({ isCollapsed, onToggleCollapse }: RightPanel
     opacity,
     brightness,
     contrast,
+    displayMode,
+    gain,
+    agcWindow,
+    wiggleOverlap,
+    wigglePolarity,
+    pickMode,
+    showCrosshair,
     setColormap,
     setOpacity,
     setBrightness,
     setContrast,
+    setDisplayMode,
+    setGain,
+    setAgcWindow,
+    setWiggleOverlap,
+    setWigglePolarity,
+    setPickMode,
+    setShowCrosshair,
     inlineIndex,
     crosslineIndex,
     timeIndex,
@@ -220,6 +259,102 @@ export default function RightPanel({ isCollapsed, onToggleCollapse }: RightPanel
       <div className="flex-1 overflow-y-auto">
         {activeTab === 'display' && (
           <>
+            <Section id="display-mode" title="显示模式">
+              <div className="grid grid-cols-2 gap-1">
+                {displayModes.map((mode) => (
+                  <button
+                    key={mode.id}
+                    className={cn(
+                      'px-2 py-1.5 rounded text-[10px] flex items-center justify-center gap-1 transition-colors',
+                      displayMode === mode.id
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-slate-700/50 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
+                    )}
+                    onClick={() => setDisplayMode(mode.id)}
+                  >
+                    {mode.icon}
+                    {mode.label}
+                  </button>
+                ))}
+              </div>
+              
+              {(displayMode === 'wiggle' || displayMode === 'va' || displayMode === 'wiggle_va') && (
+                <div className="space-y-2 pt-2 border-t border-slate-700 mt-2">
+                  <div className="text-[10px] text-slate-500 font-medium">波形参数</div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-slate-400">极性</span>
+                    <div className="flex gap-0.5">
+                      {wigglePolarities.map((wp) => (
+                        <button
+                          key={wp.id}
+                          className={cn(
+                            'px-2 py-0.5 rounded text-[10px] transition-colors',
+                            wigglePolarity === wp.id
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
+                          )}
+                          onClick={() => setWigglePolarity(wp.id)}
+                        >
+                          {wp.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <SliderControl
+                    icon={<Activity className="w-3 h-3" />}
+                    label="波形重叠"
+                    value={wiggleOverlap}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    onChange={setWiggleOverlap}
+                  />
+                </div>
+              )}
+            </Section>
+
+            <Section id="gain-control" title="增益控制">
+              <SliderControl
+                icon={<Sun className="w-3 h-3" />}
+                label="增益"
+                value={gain}
+                min={0.1}
+                max={10}
+                step={0.1}
+                onChange={setGain}
+                unit="x"
+              />
+              <SliderControl
+                icon={<Activity className="w-3 h-3" />}
+                label="AGC 时窗"
+                value={agcWindow}
+                min={0}
+                max={200}
+                step={5}
+                onChange={setAgcWindow}
+                unit="ms"
+              />
+              <div className="flex gap-1">
+                <button
+                  className="flex-1 px-2 py-1 bg-slate-700/50 hover:bg-slate-700 text-slate-400 hover:text-slate-200 text-[10px] rounded transition-colors"
+                  onClick={() => { setGain(1); setAgcWindow(0); }}
+                >
+                  重置增益
+                </button>
+                <button
+                  className={cn(
+                    'flex-1 px-2 py-1 text-[10px] rounded transition-colors',
+                    agcWindow > 0
+                      ? 'bg-green-600/30 text-green-400 border border-green-600/50'
+                      : 'bg-slate-700/50 text-slate-400 hover:bg-slate-700'
+                  )}
+                  onClick={() => setAgcWindow(agcWindow > 0 ? 0 : 50)}
+                >
+                  {agcWindow > 0 ? '关闭 AGC' : '开启 AGC'}
+                </button>
+              </div>
+            </Section>
+
             <Section id="appearance" title="外观">
               <SliderControl
                 icon={<Droplets className="w-3 h-3" />}
@@ -248,6 +383,52 @@ export default function RightPanel({ isCollapsed, onToggleCollapse }: RightPanel
                 step={0.01}
                 onChange={setContrast}
               />
+            </Section>
+
+            <Section id="interpretation" title="解释设置">
+              <label className="flex items-center justify-between text-xs text-slate-300 cursor-pointer">
+                <div className="flex items-center gap-1.5">
+                  <Crosshair className="w-3 h-3 text-slate-400" />
+                  <span>十字准线</span>
+                </div>
+                <button
+                  className={cn(
+                    'w-8 h-4 rounded-full transition-colors relative',
+                    showCrosshair ? 'bg-blue-600' : 'bg-slate-600'
+                  )}
+                  onClick={() => setShowCrosshair(!showCrosshair)}
+                >
+                  <div
+                    className={cn(
+                      'absolute top-0.5 w-3 h-3 bg-white rounded-full transition-transform',
+                      showCrosshair ? 'translate-x-4' : 'translate-x-0.5'
+                    )}
+                  />
+                </button>
+              </label>
+              
+              <div className="space-y-1 pt-2 border-t border-slate-700">
+                <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1">
+                  <Target className="w-3 h-3" />
+                  <span>拾取模式</span>
+                </div>
+                <div className="flex gap-1">
+                  {pickModes.map((pm) => (
+                    <button
+                      key={pm.id}
+                      className={cn(
+                        'flex-1 px-2 py-1 rounded text-[10px] transition-colors',
+                        pickMode === pm.id
+                          ? 'bg-amber-600 text-white'
+                          : 'bg-slate-700/50 text-slate-400 hover:bg-slate-700'
+                      )}
+                      onClick={() => setPickMode(pm.id)}
+                    >
+                      {pm.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </Section>
 
             <Section id="slice-control" title="切片控制">

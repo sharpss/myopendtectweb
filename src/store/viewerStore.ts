@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { ViewerMode, ColormapType } from '../../shared/types';
+import { ViewerMode, ColormapType, DisplayMode, PickMode, WigglePolarity, Point3D } from '../../shared/types';
 
 export type CameraPreset = 'perspective' | 'front' | 'top' | 'side' | 'iso';
 export type SliceVisibility = {
@@ -26,6 +26,15 @@ interface ViewerStoreState {
   opacity: number;
   brightness: number;
   contrast: number;
+  displayMode: DisplayMode;
+  gain: number;
+  agcWindow: number;
+  wiggleOverlap: number;
+  wigglePolarity: WigglePolarity;
+  pickMode: PickMode;
+  showCrosshair: boolean;
+  showTraceSpacing: boolean;
+  crosshairPosition: Point3D | null;
   showAxes: boolean;
   showColorbar: boolean;
   cameraPreset: CameraPreset;
@@ -43,6 +52,17 @@ interface ViewerStoreState {
   setOpacity: (opacity: number) => void;
   setBrightness: (brightness: number) => void;
   setContrast: (contrast: number) => void;
+  setDisplayMode: (mode: DisplayMode) => void;
+  setGain: (gain: number) => void;
+  setAgcWindow: (window: number) => void;
+  setWiggleOverlap: (overlap: number) => void;
+  setWigglePolarity: (polarity: WigglePolarity) => void;
+  setPickMode: (mode: PickMode) => void;
+  setShowCrosshair: (show: boolean) => void;
+  setShowTraceSpacing: (show: boolean) => void;
+  setCrosshairPosition: (pos: Point3D | null) => void;
+  setSliceIndices: (indices: { inline?: number; crossline?: number; time?: number }) => void;
+  jumpToPosition: (inline: number, crossline: number, time: number) => void;
   toggleAxes: () => void;
   toggleColorbar: () => void;
   setCameraPreset: (preset: CameraPreset) => void;
@@ -64,6 +84,15 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
   opacity: 0.9,
   brightness: 0,
   contrast: 0,
+  displayMode: 'vd',
+  gain: 1,
+  agcWindow: 50,
+  wiggleOverlap: 0.5,
+  wigglePolarity: 'positive',
+  pickMode: 'peak',
+  showCrosshair: true,
+  showTraceSpacing: false,
+  crosshairPosition: null,
   showAxes: true,
   showColorbar: true,
   cameraPreset: 'perspective',
@@ -88,6 +117,32 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
   setOpacity: (opacity) => set({ opacity }),
   setBrightness: (brightness) => set({ brightness }),
   setContrast: (contrast) => set({ contrast }),
+  setDisplayMode: (mode) => set({ displayMode: mode }),
+  setGain: (gain) => set({ gain }),
+  setAgcWindow: (window) => set({ agcWindow: window }),
+  setWiggleOverlap: (overlap) => set({ wiggleOverlap: overlap }),
+  setWigglePolarity: (polarity) => set({ wigglePolarity: polarity }),
+  setPickMode: (mode) => set({ pickMode: mode }),
+  setShowCrosshair: (show) => set({ showCrosshair: show }),
+  setShowTraceSpacing: (show) => set({ showTraceSpacing: show }),
+  setCrosshairPosition: (pos) => set({ crosshairPosition: pos }),
+  
+  setSliceIndices: (indices) => set((state) => ({
+    inlineIndex: indices.inline ?? state.inlineIndex,
+    crosslineIndex: indices.crossline ?? state.crosslineIndex,
+    timeIndex: indices.time ?? state.timeIndex,
+  })),
+  
+  jumpToPosition: (inline, crossline, time) => {
+    const state = get();
+    set({
+      inlineIndex: Math.max(0, Math.floor(inline)),
+      crosslineIndex: Math.max(0, Math.floor(crossline)),
+      timeIndex: Math.max(0, Math.floor(time)),
+      crosshairPosition: { x: inline, y: crossline, z: time },
+    });
+  },
+  
   toggleAxes: () => set((state) => ({ showAxes: !state.showAxes })),
   toggleColorbar: () => set((state) => ({ showColorbar: !state.showColorbar })),
   setCameraPreset: (preset) => set({ cameraPreset: preset }),
