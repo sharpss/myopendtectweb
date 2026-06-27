@@ -5,7 +5,9 @@ import { useInterpretationStore } from '../../store/interpretationStore';
 import { getColormapColor, applyBrightnessContrast, applyGain, applyAGC, findPeak, findTrough, findZeroCrossing } from '../../utils/colormap';
 import { Point3D, SliceType, SeismicSliceData, DisplayMode } from '../../../shared/types';
 import { cn } from '../../lib/utils';
-import { X, Undo2, Check, SkipForward, SkipBack, Database, ZoomIn, ZoomOut, Maximize2, Activity, Layers, Target, Move } from 'lucide-react';
+import { X, Undo2, Check, SkipForward, SkipBack, Database, ZoomIn, ZoomOut, Maximize2, Activity, Layers, Target, Move, Camera } from 'lucide-react';
+import { exportCanvasAsPNG } from '../../utils/exportUtils';
+import { useToastStore } from '../../store/toastStore';
 
 interface SliceViewProps {
   type: 'inline' | 'crossline' | 'timeslice';
@@ -50,10 +52,11 @@ export default function SliceView({ type, className }: SliceViewProps) {
   const { getSlice, datasets, activeDatasetId, dataProvider, isLoading } = useSeismicStore();
   const {
     colormap, brightness, contrast, displayMode, gain, agcWindow, wiggleOverlap, wigglePolarity,
-    pickMode, showCrosshair, inlineIndex, crosslineIndex, timeIndex,
+    pickMode, showCrosshair, showTraceSpacing, inlineIndex, crosslineIndex, timeIndex,
     setInlineIndex, setCrosslineIndex, setTimeIndex, setCursorPosition, crosshairPosition, setCrosshairPosition, setSliceIndices,
   } = useViewerStore();
   const { activeTool, horizons, faults, activeHorizonId, addPickPoint, isPicking, currentPickPoints, startPicking, finishPicking, cancelPicking, removeLastPickPoint } = useInterpretationStore();
+  const { addToast } = useToastStore();
   
   const dataset = datasets.find((d) => d.id === activeDatasetId);
   const dataLoaded = dataProvider?.isLoaded ?? false;
@@ -431,15 +434,28 @@ export default function SliceView({ type, className }: SliceViewProps) {
         }
       }
       
-      ctx.beginPath();
-      ctx.strokeStyle = 'rgba(100, 100, 100, 0.3)';
-      ctx.lineWidth = 0.5;
-      for (let x = 0; x < dataWidth; x += traceStep * 5) {
-        const traceX = offsetX + x * sx;
-        ctx.moveTo(traceX, offsetY);
-        ctx.lineTo(traceX, offsetY + scaledHeight);
+      if (showTraceSpacing) {
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(120, 180, 255, 0.35)';
+        ctx.lineWidth = 0.5;
+        const traceLineStep = Math.max(1, Math.floor(traceStep));
+        for (let x = 0; x < dataWidth; x += traceLineStep) {
+          const traceX = offsetX + x * sx;
+          ctx.moveTo(traceX, offsetY);
+          ctx.lineTo(traceX, offsetY + scaledHeight);
+        }
+        ctx.stroke();
+        
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(120, 180, 255, 0.2)';
+        ctx.lineWidth = 0.5;
+        ctx.setLineDash([2, 2]);
+        const baselineY = offsetY + scaledHeight / 2;
+        ctx.moveTo(offsetX, baselineY);
+        ctx.lineTo(offsetX + scaledWidth, baselineY);
+        ctx.stroke();
+        ctx.setLineDash([]);
       }
-      ctx.stroke();
     }
     
     horizons.filter(h => h.visible).forEach(horizon => {
@@ -1186,6 +1202,31 @@ export default function SliceView({ type, className }: SliceViewProps) {
             >
               <Maximize2 className="w-3.5 h-3.5" />
             </button>
+            {dataLoaded && (
+              <button
+                className="p-1.5 bg-slate-900/90 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors backdrop-blur-sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  try {
+                    if (canvasRef.current) {
+                      const sliceNum = type === 'inline'
+                        ? Math.round(inlineStart + index * inlineStep)
+                        : type === 'crossline'
+                        ? Math.round(crosslineStart + index * crosslineStep)
+                        : Math.round(timeStart + index * sampleInterval);
+                      const timestamp = new Date().toISOString().slice(0, 10);
+                      exportCanvasAsPNG(canvasRef.current, `${type}_${sliceNum}_${timestamp}.png`);
+                      addToast(`已保存 ${title} ${sliceNum} 截图`, 'success');
+                    }
+                  } catch (err) {
+                    addToast('截图失败：' + (err as Error).message, 'error');
+                  }
+                }}
+                title="截图保存"
+              >
+                <Camera className="w-3.5 h-3.5" />
+              </button>
+            )}
             
             {(activeTool === 'horizon' || activeTool === 'fault') && (
               <div className="flex items-center gap-0.5 ml-1 px-1 py-0.5 bg-slate-900/90 rounded backdrop-blur-sm">

@@ -24,14 +24,25 @@
 | **2D 剖面** | Inline / Crossline / Timeslice 三视图 | ✅ |
 | | 缩放与平移（Ctrl+滚轮/中键拖拽） | ✅ |
 | | 十字光标定位 | ✅ |
-| | 色标（Colorbar）显示 | ✅ |
+| | 四视图十字准线联动 | ✅ |
+| | 色标（Colorbar）显示（最大值/最小值） | ✅ |
 | | 坐标轴刻度与单位标注 | ✅ |
 | | 切片导航按钮（±1/±10） | ✅ |
 | | 实际地震道编号显示 | ✅ |
+| | 道号快速跳转（G键） | ✅ |
+| | 四种专业显示模式（变密度/波形/变面积/波形+变面积） | ✅ |
+| | 波形极性选择（正/负/双向） | ✅ |
+| | 全局增益与 AGC 自动增益控制 | ✅ |
+| | 波形重叠度调节 | ✅ |
+| | 剖面截图保存（PNG） | ✅ |
 | **解释工具** | 层位拾取与编辑 | ✅ |
-| | 层位自动追踪 | ✅ |
+| | 四种拾取模式（手动/波峰/波谷/零交叉） | ✅ |
+| | 层位自动追踪框架 | ✅ |
 | | 断层绘制 | ✅ |
+| | 层位/断层颜色自定义（16预设+HEX自定义） | ✅ |
+| | 层位/断层双击重命名 | ✅ |
 | | 层位/断层可见性控制 | ✅ |
+| | 层位/断层导出（CSV/JSON） | ✅ |
 | | 距离/时间测量工具 | ✅ |
 | | 撤销 / 重做系统 | ✅ |
 | **SEGY 导入** | SEGY 文件导入向导 | ✅ |
@@ -47,15 +58,20 @@
 | | 分块加载 + LRU 缓存（1-10GB） | 🔧 |
 | | 多分辨率金字塔（>10GB） | 🔧 |
 | | Zarr 云原生格式支持 | 🔧 |
-| **显示控制** | 多种色带（Seismic/Gray/Rainbow/Hot/Cool/Viridis/Plasma） | ✅ |
+| **显示控制** | 9种专业色带（Seismic/Black-Red/Red-White-Blue/Gray/Rainbow/Hot/Cool/Viridis/Plasma） | ✅ |
 | | 亮度/对比度/不透明度调节 | ✅ |
+| | 全局增益与 AGC 时窗控制 | ✅ |
+| | 3D网格显示开关 | ✅ |
+| | 正交/透视投影切换 | ✅ |
+| | 坐标轴显示开关 | ✅ |
 | | 切片动画播放 | ✅ |
-| **用户体验** | 完整快捷键系统 | ✅ |
+| **用户体验** | 完整快捷键系统（22+快捷键） | ✅ |
 | | 四视图/单视图切换 | ✅ |
 | | 深色主题 | ✅ |
 | | 全局加载进度指示 | ✅ |
+| | Toast 通知系统（成功/错误/信息提示） | ✅ |
 | | 错误边界与友好提示 | ✅ |
-| | 左右面板可折叠 | ✅ |
+| | 左右面板可折叠（Q/W键） | ✅ |
 | **属性分析** | 振幅属性 | ✅ |
 | | 相干体 | 🔧 |
 | | 曲率属性 | 🔧 |
@@ -130,7 +146,8 @@
 │   │       ├── Modal.tsx         # 基础模态框
 │   │       ├── LoadingOverlay.tsx # 全局加载遮罩
 │   │       ├── SegyImportModal.tsx # SEGY 导入向导
-│   │       └── KeyboardShortcutsModal.tsx # 快捷键帮助
+│   │       ├── KeyboardShortcutsModal.tsx # 快捷键帮助
+│   │       └── Toast.tsx         # Toast 通知组件
 │   ├── data/
 │   │   ├── providers/            # 数据提供者（策略模式）
 │   │   │   ├── BaseDataProvider.ts    # 抽象基类
@@ -144,6 +161,7 @@
 │   │   ├── seismicStore.ts       # 地震数据与数据提供者状态
 │   │   ├── viewerStore.ts        # 视图状态（切片索引/相机/色带）
 │   │   ├── interpretationStore.ts # 解释工具状态（层位/断层/拾取）
+│   │   ├── toastStore.ts         # Toast 通知状态
 │   │   └── themeStore.ts         # 主题状态
 │   ├── utils/                    # 工具函数
 │   │   ├── lruCache.ts           # LRU 缓存实现
@@ -151,7 +169,8 @@
 │   │   ├── dataStrategy.ts       # 数据策略推荐
 │   │   ├── resample.ts           # 重采样/降采样工具
 │   │   ├── segyUtils.ts          # SEGY 解析工具
-│   │   └── colormap.ts           # 色带颜色映射
+│   │   ├── colormap.ts           # 色带颜色映射
+│   │   └── exportUtils.ts        # 导出/截图工具函数
 │   ├── hooks/                    # 自定义 Hooks
 │   │   ├── useKeyboardShortcuts.ts # 快捷键 Hook
 │   │   └── useTheme.ts           # 主题 Hook
@@ -274,6 +293,7 @@ node scripts/generate_test_segy.js
 | `+` / `=` | 放大 2D 剖面 |
 | `-` | 缩小 2D 剖面 |
 | `0` | 重置 2D 视图缩放 |
+| `G` | 道号快速跳转 |
 | `Ctrl+Z` | 撤销 |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | 重做 |
 | `Backspace` | 删除最后拾取点/测量点 |
@@ -355,11 +375,12 @@ POST /api/attributes/compute
 
 ### 状态管理
 
-使用 Zustand 进行状态管理，分为四个独立 Store：
+使用 Zustand 进行状态管理，分为五个独立 Store：
 
 - **[seismicStore.ts](file:///workspace/src/store/seismicStore.ts)**：地震数据集列表、当前激活数据集、数据提供者（DataProvider）实例、加载进度、错误信息
-- **[viewerStore.ts](file:///workspace/src/store/viewerStore.ts)**：视图模式、切片索引、色带选择、亮度/对比度/不透明度、切片可见性、相机预设、动画控制、光标位置
-- **[interpretationStore.ts](file:///workspace/src/store/interpretationStore.ts)**：活动工具、层位列表、断层列表、拾取状态、撤销/重做栈、自动追踪
+- **[viewerStore.ts](file:///workspace/src/store/viewerStore.ts)**：视图模式、切片索引、色带选择、显示模式、增益/AGC、波形参数、亮度/对比度/不透明度、切片可见性、相机预设、投影模式、十字准线、动画控制、光标位置
+- **[interpretationStore.ts](file:///workspace/src/store/interpretationStore.ts)**：活动工具、层位列表、断层列表、拾取状态、撤销/重做栈、颜色/重命名支持、自动追踪
+- **[toastStore.ts](file:///workspace/src/store/toastStore.ts)**：Toast通知系统（成功/错误/信息/警告）
 - **[themeStore.ts](file:///workspace/src/store/themeStore.ts)**：亮/暗主题切换
 
 ### 数据提供者模式（Provider Pattern）
@@ -383,16 +404,18 @@ interface DataProvider {
 
 ### 颜色映射
 
-[colormap.ts](file:///workspace/src/utils/colormap.ts) 支持多种地震可视化色带：
+[colormap.ts](file:///workspace/src/utils/colormap.ts) 支持9种地震可视化色带：
 
 - **Seismic**：蓝-白-红（标准地震振幅显示，正值红色、负值蓝色）
+- **Red-White-Blue**：红-白-蓝（反转色带）
+- **Black-Red**：黑-红-黄（GeoEast风格）
 - **Gray**：黑-白灰度
 - **Rainbow**：彩虹色
 - **Hot**：黑-红-黄-白热力图
 - **Cool**：青-品红冷色
 - **Viridis / Plasma**：感知均匀的科学可视化色带
 
-色带支持亮度/对比度实时调节，通过 Canvas 逐像素或 ImageData 批量处理。
+色带支持亮度/对比度实时调节、全局增益、AGC自动增益控制，通过 Canvas ImageData 批量处理提升渲染性能。支持峰值/谷值/零交叉点自动检测用于解释拾取。
 
 ## 🔧 配置说明
 

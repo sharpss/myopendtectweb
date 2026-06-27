@@ -91,6 +91,7 @@ export default function RightPanel({ isCollapsed, onToggleCollapse }: RightPanel
     wigglePolarity,
     pickMode,
     showCrosshair,
+    showTraceSpacing,
     showAxes,
     sliceVisibility,
     projection,
@@ -105,6 +106,7 @@ export default function RightPanel({ isCollapsed, onToggleCollapse }: RightPanel
     setWigglePolarity,
     setPickMode,
     setShowCrosshair,
+    setShowTraceSpacing,
     toggleAxes,
     setSliceVisibility,
     setProjection,
@@ -573,6 +575,15 @@ export default function RightPanel({ isCollapsed, onToggleCollapse }: RightPanel
                   className="rounded accent-blue-600"
                 />
                 显示网格
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showTraceSpacing}
+                  onChange={() => setShowTraceSpacing(!showTraceSpacing)}
+                  className="rounded accent-blue-600"
+                />
+                道间隔参考线（波形模式）
               </label>
               <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
                 <input type="checkbox" defaultChecked className="rounded accent-blue-600" />

@@ -8,9 +8,11 @@ import Viewer3D from '../components/viewer/Viewer3D';
 import SliceView from '../components/viewer/SliceView';
 import KeyboardShortcutsModal from '../components/common/KeyboardShortcutsModal';
 import LoadingOverlay from '../components/common/LoadingOverlay';
+import ToastContainer from '../components/common/Toast';
 import { useViewerStore } from '../store/viewerStore';
 import { useThemeStore } from '../store/themeStore';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
+import { useSettingsPersistence } from '../hooks/useSettingsPersistence';
 import { useInterpretationStore } from '../store/interpretationStore';
 import { useSeismicStore } from '../store/seismicStore';
 
@@ -22,6 +24,8 @@ export default function Workbench() {
   const { mode: themeMode, toggleTheme } = useThemeStore();
   const { undo, redo, setActiveTool } = useInterpretationStore();
   const { isLoading, loadProgress, loadDataset, datasets, activeDatasetId } = useSeismicStore();
+  
+  useSettingsPersistence();
 
   useEffect(() => {
     if (datasets.length > 0 && activeDatasetId) {
@@ -105,6 +109,7 @@ export default function Workbench() {
       
       <StatusBar />
       <LoadingOverlay />
+      <ToastContainer />
 
       <KeyboardShortcutsModal
         isOpen={shortcutsModalOpen}

@@ -13,10 +13,19 @@ import {
   GripVertical,
   Check,
   X,
+  Download,
 } from 'lucide-react';
 import { useInterpretationStore } from '../../store/interpretationStore';
 import { useSeismicStore } from '../../store/seismicStore';
+import { useToastStore } from '../../store/toastStore';
 import { cn } from '../../lib/utils';
+import {
+  downloadTextFile,
+  exportHorizonsCSV,
+  exportFaultsCSV,
+  exportHorizonsJSON,
+  exportFaultsJSON,
+} from '../../utils/exportUtils';
 
 type TabType = 'data' | 'horizons' | 'faults';
 
@@ -188,6 +197,7 @@ export default function LeftPanel({ isCollapsed, onToggleCollapse }: LeftPanelPr
     renameHorizon,
     renameFault,
   } = useInterpretationStore();
+  const { addToast } = useToastStore();
 
   const toggleExpand = (id: string) => {
     setExpandedItems(prev => {
@@ -351,13 +361,59 @@ export default function LeftPanel({ isCollapsed, onToggleCollapse }: LeftPanelPr
           <div className="flex flex-col h-full">
             <div className="flex items-center justify-between p-2 border-b border-slate-700">
               <span className="text-xs text-slate-400">共 {horizons.length} 个层位</span>
-              <button
-                className="p-1 text-slate-400 hover:text-white hover:bg-slate-700 rounded"
-                onClick={() => addHorizon(`Horizon ${horizons.length + 1}`)}
-                title="新建层位"
-              >
-                <Plus className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-0.5">
+                {horizons.some(h => h.visible && h.points.length > 0) && (
+                  <div className="relative group">
+                    <button
+                      className="p-1 text-slate-400 hover:text-white hover:bg-slate-700 rounded"
+                      title="导出层位"
+                    >
+                      <Download className="w-4 h-4" />
+                    </button>
+                    <div className="absolute right-0 top-full mt-1 z-50 hidden group-hover:block bg-slate-700 border border-slate-600 rounded shadow-lg min-w-[120px]">
+                      <button
+                        className="w-full px-3 py-1.5 text-xs text-left text-slate-200 hover:bg-slate-600"
+                        onClick={() => {
+                          try {
+                            const visibleCount = horizons.filter(h => h.visible && h.points.length > 0).length;
+                            const csv = exportHorizonsCSV(horizons);
+                            const timestamp = new Date().toISOString().slice(0, 10);
+                            downloadTextFile(csv, `horizons_${timestamp}.csv`, 'text/csv');
+                            addToast(`已导出 ${visibleCount} 个层位为 CSV`, 'success');
+                          } catch (err) {
+                            addToast('导出失败：' + (err as Error).message, 'error');
+                          }
+                        }}
+                      >
+                        导出为 CSV
+                      </button>
+                      <button
+                        className="w-full px-3 py-1.5 text-xs text-left text-slate-200 hover:bg-slate-600"
+                        onClick={() => {
+                          try {
+                            const visibleCount = horizons.filter(h => h.visible && h.points.length > 0).length;
+                            const json = exportHorizonsJSON(horizons);
+                            const timestamp = new Date().toISOString().slice(0, 10);
+                            downloadTextFile(json, `horizons_${timestamp}.json`, 'application/json');
+                            addToast(`已导出 ${visibleCount} 个层位为 JSON`, 'success');
+                          } catch (err) {
+                            addToast('导出失败：' + (err as Error).message, 'error');
+                          }
+                        }}
+                      >
+                        导出为 JSON
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <button
+                  className="p-1 text-slate-400 hover:text-white hover:bg-slate-700 rounded"
+                  onClick={() => addHorizon(`Horizon ${horizons.length + 1}`)}
+                  title="新建层位"
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+              </div>
             </div>
             <div className="flex-1 overflow-y-auto p-1 space-y-0.5">
               {horizons.map((horizon) => (
@@ -431,13 +487,59 @@ export default function LeftPanel({ isCollapsed, onToggleCollapse }: LeftPanelPr
           <div className="flex flex-col h-full">
             <div className="flex items-center justify-between p-2 border-b border-slate-700">
               <span className="text-xs text-slate-400">共 {faults.length} 个断层</span>
-              <button
-                className="p-1 text-slate-400 hover:text-white hover:bg-slate-700 rounded"
-                onClick={() => addFault(`Fault ${faults.length + 1}`)}
-                title="新建断层"
-              >
-                <Plus className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-0.5">
+                {faults.some(f => f.visible && f.vertices.length > 0) && (
+                  <div className="relative group">
+                    <button
+                      className="p-1 text-slate-400 hover:text-white hover:bg-slate-700 rounded"
+                      title="导出断层"
+                    >
+                      <Download className="w-4 h-4" />
+                    </button>
+                    <div className="absolute right-0 top-full mt-1 z-50 hidden group-hover:block bg-slate-700 border border-slate-600 rounded shadow-lg min-w-[120px]">
+                      <button
+                        className="w-full px-3 py-1.5 text-xs text-left text-slate-200 hover:bg-slate-600"
+                        onClick={() => {
+                          try {
+                            const visibleCount = faults.filter(f => f.visible && f.vertices.length > 0).length;
+                            const csv = exportFaultsCSV(faults);
+                            const timestamp = new Date().toISOString().slice(0, 10);
+                            downloadTextFile(csv, `faults_${timestamp}.csv`, 'text/csv');
+                            addToast(`已导出 ${visibleCount} 个断层为 CSV`, 'success');
+                          } catch (err) {
+                            addToast('导出失败：' + (err as Error).message, 'error');
+                          }
+                        }}
+                      >
+                        导出为 CSV
+                      </button>
+                      <button
+                        className="w-full px-3 py-1.5 text-xs text-left text-slate-200 hover:bg-slate-600"
+                        onClick={() => {
+                          try {
+                            const visibleCount = faults.filter(f => f.visible && f.vertices.length > 0).length;
+                            const json = exportFaultsJSON(faults);
+                            const timestamp = new Date().toISOString().slice(0, 10);
+                            downloadTextFile(json, `faults_${timestamp}.json`, 'application/json');
+                            addToast(`已导出 ${visibleCount} 个断层为 JSON`, 'success');
+                          } catch (err) {
+                            addToast('导出失败：' + (err as Error).message, 'error');
+                          }
+                        }}
+                      >
+                        导出为 JSON
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <button
+                  className="p-1 text-slate-400 hover:text-white hover:bg-slate-700 rounded"
+                  onClick={() => addFault(`Fault ${faults.length + 1}`)}
+                  title="新建断层"
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+              </div>
             </div>
             <div className="flex-1 overflow-y-auto p-1 space-y-0.5">
               {faults.map((fault) => (
